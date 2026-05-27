@@ -177,6 +177,208 @@ def get_all_financial_data_v2(tickers):
             
     return pd.DataFrame(data_list)
 
+# --- 2년치 데이터 수집을 통해 지난 6개월 월말 포트폴리오를 시뮬레이션하기 위한 함수 ---
+@st.cache_data(ttl=3600)
+def get_historical_simulation_data(tickers):
+    prices_dict = {}
+    now = datetime.datetime.now()
+    start_date = (now - datetime.timedelta(days=730)).strftime('%Y-%m-%d')
+    for ticker in tickers:
+        try:
+            asset = yf.Ticker(ticker)
+            hist = asset.history(start=start_date, interval="1d")
+            if not hist.empty:
+                prices_dict[ticker] = hist['Close']
+        except Exception:
+            pass
+            
+    spy_divs = pd.Series(dtype=float)
+    try:
+        spy_divs = yf.Ticker("SPY").dividends
+    except Exception:
+        pass
+        
+    return prices_dict, spy_divs
+
+# 특정 월말 기준의 리밸런싱 포트폴리오를 연산하는 백테스트 엔진
+def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date, OFFENSIVE_A, DEFENSIVE_A, OFFENSIVE_B, DEFENSIVE_B, OFFENSIVE_C, DEFENSIVE_C):
+    monthly_prices = {}
+    for t, series in prices_dict.items():
+        sub_series = series[series.index <= target_date]
+        if sub_series.empty:
+            continue
+        
+        df = sub_series.to_frame()
+        df['year'] = df.index.year
+        df['month'] = df.index.month
+        last_idx = df.groupby(['year', 'month']).apply(lambda x: x.index[-1])
+        m_closes = sub_series.loc[last_idx].tolist()
+        
+        if len(m_closes) < 13:
+            continue
+        monthly_prices[t] = m_closes
+
+    if "TIP" not in monthly_prices or "SPY" not in monthly_prices:
+        return {"CASH (현금)": 100.0}, False, False, False, 1.32
+
+    def calc_momentum_and_scores(m_closes):
+        curr = m_closes[-1]
+        p1 = m_closes[-2] if len(m_closes) >= 2 else curr
+        p3 = m_closes[-4] if len(m_closes) >= 4 else curr
+        p5 = m_closes[-6] if len(m_closes) >= 6 else curr
+        p6 = m_closes[-7] if len(m_closes) >= 7 else curr
+        p9 = m_closes[-10] if len(m_closes) >= 10 else curr
+        p12 = m_closes[-13] if len(m_closes) >= 13 else m_closes[0]
+
+        r1 = ((curr - p1) / p1) * 100
+        r3 = ((curr - p3) / p3) * 100
+        r5 = ((curr - p5) / p5) * 100
+        r6 = ((curr - p6) / p6) * 100
+        r9 = ((curr - p9) / p9) * 100
+        r12 = ((curr - p12) / p12) * 100
+
+        score_a_off = (r1 + r3 + r6 + r12) / 4
+        score_a_def = (r1 + r3 + r6 + r9 + r12) / 5
+        score_b_off = (r1 * 12 + r3 * 4 + r6 * 2 + r12 * 1) / 19
+        score_b_def_simple = (r1 + r3 + r6 + r9 + r12) / 5
+
+        return {
+            "curr": curr,
+            "r1": r1, "r3": r3, "r5": r5, "r6": r6, "r9": r9, "r12": r12,
+            "A_공격스코어": score_a_off,
+            "A_방어스코어": score_a_def,
+            "B_공격스코어": score_b_off,
+            "B_단순모멘텀": score_b_def_simple
+        }
+
+    ticker_metrics = {}
+    for t, m_closes in monthly_prices.items():
+        ticker_metrics[t] = calc_momentum_and_scores(m_closes)
+
+    # 1. 전략 A 배분
+    tip_closes = monthly_prices["TIP"]
+    tip_current = tip_closes[-1]
+    tip_last11 = tip_closes[-11:]
+    tip_ma11 = sum(tip_last11) / len(tip_last11)
+    is_attack_a_hist = tip_current > tip_ma11
+
+    alloc_a_hist = {}
+    if is_attack_a_hist:
+        off_scores = []
+        for t in OFFENSIVE_A:
+            if t in ticker_metrics:
+                off_scores.append((t, ticker_metrics[t]["A_공격스코어"]))
+        if off_scores:
+            off_scores.sort(key=lambda x: x[1], reverse=True)
+            for t, _ in off_scores[:4]:
+                alloc_a_hist[t] = 25.0
+        else:
+            alloc_a_hist["CASH (현금)"] = 100.0
+    else:
+        def_scores = []
+        for t in DEFENSIVE_A:
+            if t in ticker_metrics:
+                def_scores.append((t, ticker_metrics[t]["A_방어스코어"]))
+        if def_scores:
+            def_scores.sort(key=lambda x: x[1], reverse=True)
+            top_1 = def_scores[0]
+            if top_1[1] > 0:
+                alloc_a_hist[top_1[0]] = 100.0
+            else:
+                alloc_a_hist["CASH (현금)"] = 100.0
+        else:
+            alloc_a_hist["CASH (현금)"] = 100.0
+
+    # 2. 전략 B 배분
+    tip_metrics = ticker_metrics["TIP"]
+    tip_score_b_hist = (tip_metrics["r1"] + tip_metrics["r3"] + tip_metrics["r6"] + tip_metrics["r9"] + tip_metrics["r12"]) / 5
+    is_attack_b_hist = tip_score_b_hist > 0
+
+    alloc_b_hist = {}
+    if is_attack_b_hist:
+        off_scores = []
+        for t in OFFENSIVE_B:
+            if t in ticker_metrics:
+                off_scores.append((t, ticker_metrics[t]["B_공격스코어"]))
+        if off_scores:
+            off_scores.sort(key=lambda x: x[1], reverse=True)
+            alloc_b_hist[off_scores[0][0]] = 100.0
+        else:
+            alloc_b_hist["CASH (현금)"] = 100.0
+    else:
+        def_scores = []
+        for t in DEFENSIVE_B:
+            if t in ticker_metrics:
+                def_scores.append((t, ticker_metrics[t]["r5"], ticker_metrics[t]["B_단순모멘텀"]))
+        if def_scores:
+            def_scores.sort(key=lambda x: x[1], reverse=True)
+            top_1 = def_scores[0]
+            if top_1[2] > 0:
+                alloc_b_hist[top_1[0]] = 100.0
+            else:
+                alloc_b_hist["CASH (현금)"] = 100.0
+        else:
+            alloc_b_hist["CASH (현금)"] = 100.0
+
+    # 3. 전략 C 배분
+    dy_val = 1.32
+    if not spy_divs.empty:
+        start_dt = target_date - pd.Timedelta(days=365)
+        if spy_divs.index.tz is not None:
+            start_dt = start_dt.tz_localize(spy_divs.index.tz)
+            target_dt_tz = target_date.tz_localize(spy_divs.index.tz)
+        else:
+            target_dt_tz = target_date
+            
+        divs_in_range = spy_divs.loc[start_dt:target_dt_tz]
+        sum_divs = divs_in_range.sum()
+        
+        spy_price = ticker_metrics.get("SPY", {}).get("curr", None)
+        if spy_price:
+            dy_calc = (sum_divs / spy_price) * 100
+            dy_val = dy_calc * 100 if dy_calc < 0.15 else dy_calc
+            
+    is_attack_c_hist = dy_val > 1.33
+
+    alloc_c_hist = {}
+    if is_attack_c_hist:
+        off_scores = []
+        for t in OFFENSIVE_C:
+            if t in ticker_metrics:
+                off_scores.append((t, ticker_metrics[t]["A_공격스코어"]))
+        if off_scores:
+            off_scores.sort(key=lambda x: x[1], reverse=True)
+            alloc_c_hist[off_scores[0][0]] = 100.0
+        else:
+            alloc_c_hist["CASH (현금)"] = 100.0
+    else:
+        def_scores = []
+        for t in DEFENSIVE_C:
+            if t in ticker_metrics:
+                def_scores.append((t, ticker_metrics[t]["A_방어스코어"]))
+        if def_scores:
+            def_scores.sort(key=lambda x: x[1], reverse=True)
+            top_1 = def_scores[0]
+            if top_1[1] > 0:
+                alloc_c_hist[top_1[0]] = 100.0
+            else:
+                alloc_c_hist["CASH (현금)"] = 100.0
+        else:
+            alloc_c_hist["CASH (현금)"] = 100.0
+
+    # 혼합 포트폴리오 비중 병합
+    mixed_portfolio = {}
+    for t, w in alloc_a_hist.items():
+        mixed_portfolio[t] = mixed_portfolio.get(t, 0.0) + (w / 100.0) * 33.333
+    for t, w in alloc_b_hist.items():
+        mixed_portfolio[t] = mixed_portfolio.get(t, 0.0) + (w / 100.0) * 33.333
+    for t, w in alloc_c_hist.items():
+        mixed_portfolio[t] = mixed_portfolio.get(t, 0.0) + (w / 100.0) * 33.333
+
+    clean_portfolio = {t: round(w, 2) for t, w in mixed_portfolio.items() if w > 0.01}
+    return clean_portfolio, is_attack_a_hist, is_attack_b_hist, is_attack_c_hist, dy_val
+
+
 # 데이터 실시간 가져오기
 with st.spinner("야후 파이낸스 실시간 데이터를 통합 집계 중..."):
     df_all = get_all_financial_data_v2(ALL_TICKERS)
@@ -508,3 +710,62 @@ else:
                     p = data_dict.get(t, {}).get("현재가", 0.0)
                     s = data_dict.get(t, {}).get("A_방어스코어", 0.0)
                     st.info(f"🏆 **{t}** : 비중 **100%** (현재가: ${p:.2f}, 모멘텀: {s:.2f}%)")
+
+    # ==================== 대시보드 공통 하단: 지난 6개월간의 월말 기준 리밸런싱 역사 백테스트 ====================
+    with st.spinner("지난 6개월 월말 포트폴리오 데이터를 로딩 및 역동 연산 중..."):
+        hist_prices, spy_divs_hist = get_historical_simulation_data(ALL_TICKERS)
+        
+    if hist_prices and "SPY" in hist_prices:
+        st.markdown("---")
+        st.markdown("### 📅 월말 기준 리밸런싱 포트폴리오 역사 (최근 6개월)")
+        st.caption("매월 최종 영업일 마감 데이터를 기준으로 실시간 모멘텀과 시그널을 연산하여, 익월 1일 아침 리밸런싱 시 적용되는 혼합 포트폴리오 구성 비중입니다.")
+        
+        spy_series = hist_prices["SPY"]
+        df_spy_dates = spy_series.to_frame()
+        df_spy_dates['year'] = df_spy_dates.index.year
+        df_spy_dates['month'] = df_spy_dates.index.month
+        
+        # 년-월별 가장 마지막 영업일의 날짜 추출
+        month_ends = df_spy_dates.groupby(['year', 'month']).apply(lambda x: x.index[-1]).tolist()
+        
+        # 진행 중인 미완료 상태의 이번 달을 제외하고, 완료된 지난 6개월 수집
+        now = datetime.datetime.now()
+        completed_month_ends = [d for d in month_ends if not (d.year == now.year and d.month == now.month)]
+        completed_6_months = completed_month_ends[-6:]
+        completed_6_months.reverse() # 최신순 정렬 (최근 월이 먼저 보이도록)
+        
+        # 2열 그리드 배치로 공간 극대화 및 깔끔한 출력 유지
+        col_h1, col_h2 = st.columns(2)
+        for idx, date in enumerate(completed_6_months):
+            target_col = col_h1 if idx % 2 == 0 else col_h2
+            
+            # 해당 월말 시점의 최종 포트폴리오 및 시그널 역동 연산
+            hist_portfolio, sig_a, sig_b, sig_c, dy_c = compute_historical_portfolio_at_month_end(
+                hist_prices, spy_divs_hist, date,
+                OFFENSIVE_A, DEFENSIVE_A, OFFENSIVE_B, DEFENSIVE_B, OFFENSIVE_C, DEFENSIVE_C
+            )
+            
+            date_str = date.strftime("%Y년 %m월 %d일")
+            sig_text_a = "🟢 공격" if sig_a else "🛡️ 방어"
+            sig_text_b = "🟢 공격" if sig_b else "🛡️ 방어"
+            sig_text_c = "🟢 공격" if sig_c else "🛡️ 방어"
+            
+            with target_col:
+                with st.expander(f"📅 {date_str} 마감 기준 포트폴리오"):
+                    sm1, sm2, sm3 = st.columns(3)
+                    with sm1:
+                        st.caption("전략A 신호")
+                        st.markdown(f"**{sig_text_a}**")
+                    with sm2:
+                        st.caption("전략B 신호")
+                        st.markdown(f"**{sig_text_b}**")
+                    with sm3:
+                        st.caption("전략C 신호")
+                        st.markdown(f"**{sig_text_c}**<br/><small>({dy_c:.2f}%)</small>", unsafe_allow_html=True)
+                    
+                    st.markdown("**포트폴리오 비중:**")
+                    hist_rows = [{"자산명(Ticker)": k, "배분비중 (%)": f"{v:.2f}%"} for k, v in hist_portfolio.items()]
+                    if hist_rows:
+                        st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
+                    else:
+                        st.write("⚠️ 해당 기간 데이터 부족")
