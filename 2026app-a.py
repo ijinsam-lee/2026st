@@ -87,6 +87,17 @@ DEFENSIVE_C = ["GLD", "PDBC", "OILK"]       # 3대 원자재 방어자산
 # 중복 없는 전체 티커 추출
 ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C))
 
+# 실시간 원/달러 환율 구하는 헬퍼 함수
+def get_usd_krw_rate():
+    try:
+        usd_krw = yf.Ticker("USDKRW=X")
+        hist = usd_krw.history(period="1d")
+        if not hist.empty:
+            return float(hist['Close'].iloc[-1])
+    except Exception:
+        pass
+    return 1380.0  # 기본 백업 환율
+
 # S&P 500 배당수익률 구하는 헬퍼 함수
 def get_sp500_dividend_yield():
     try:
@@ -546,9 +557,83 @@ else:
         c_sig2.metric("전략B (TIP 모멘텀)", f"{tip_score_b:.2f}%", "공격" if is_attack_b else "방어", delta_color="inverse" if not is_attack_b else "normal")
         c_sig3.metric("전략C (배당수익률)", f"{realtime_dy:.2f}%", "공격" if is_attack_c else "방어", delta_color="inverse" if not is_attack_c else "normal")
 
-        # 추천 포트폴리오 자산 리스트
-        st.markdown("### 🎯 2026년 혼합 자산 배분 비중")
-        st.dataframe(df_mix, use_container_width=True, hide_index=True)
+        # 시각화 도넛 차트 및 리스트 배치
+        st.markdown("### 📊 포트폴리오 비중 분배 현황")
+        chart_col, table_col = st.columns([5, 5])
+        
+        with chart_col:
+            try:
+                import plotly.express as px
+                fig = px.pie(
+                    df_mix,
+                    values="배분 비중 (%)",
+                    names="자산군 (Ticker)",
+                    hole=0.42,
+                    color_discrete_sequence=px.colors.sequential.Slate
+                )
+                fig.update_layout(
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.35, xanchor="center", x=0.5),
+                    height=280
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                st.info("시각화 도넛차트 로드 중... (DataFrame 활용 대체 가능)")
+                st.bar_chart(df_mix.set_index("자산군 (Ticker)")["배분 비중 (%)"])
+                
+        with table_col:
+            st.dataframe(df_mix, use_container_width=True, hide_index=True)
+
+        # --- 신규 추가: 실시간 리밸런싱 및 목표 수량 계산기 ---
+        st.markdown("### 💰 실시간 리밸런싱 목표 수량 계산기")
+        st.markdown("현재 환율과 실시간 주가를 기반으로, 설정한 원화 예산에 필요한 **자산별 목표 환전 달러** 및 **실제 매수 주수**를 계산해 드립니다.")
+        
+        # 실시간 환율 정보 표시
+        live_exchange_rate = get_usd_krw_rate()
+        st.info(f"💵 **실시간 적용 환율**: 1달러 = **{live_exchange_rate:,.2f}원** (야후 파이낸스 USDKRW=X 기준)")
+        
+        # 총 투자금 입력 상자
+        total_krw_budget = st.number_input(
+            "총 투자 금액 입력 (원화 ₩)",
+            min_value=0,
+            value=10000000,
+            step=100000,
+            format="%d"
+        )
+        
+        if total_krw_budget > 0:
+            calc_data = []
+            for _, row in df_mix.iterrows():
+                ticker = row["자산군 (Ticker)"]
+                weight = row["배분 비중 (%)"]
+                
+                # 원화 배정금액 계산
+                krw_allocation = total_krw_budget * (weight / 100.0)
+                # 달러 환산 금액 계산
+                usd_allocation = krw_allocation / live_exchange_rate
+                
+                # 수량 계산 (현금은 수량에서 제외)
+                if ticker == "CASH (현금)":
+                    target_shares = "-"
+                    current_price_str = "-"
+                else:
+                    price = data_dict.get(ticker, {}).get("현재가", 0.0)
+                    current_price_str = f"${price:.2f}"
+                    if price > 0:
+                        target_shares = f"{usd_allocation / price:.1f} 주"
+                    else:
+                        target_shares = "계산 불가"
+                
+                calc_data.append({
+                    "자산군 (Ticker)": ticker,
+                    "배분 비중": f"{weight:.2f}%",
+                    "배정액 (원화)": f"₩ {krw_allocation:,.0f}",
+                    "목표 투자액 (달러)": f"${usd_allocation:,.2f}",
+                    "현재가": current_price_str,
+                    "목표 매수량": target_shares
+                })
+                
+            st.dataframe(pd.DataFrame(calc_data), use_container_width=True, hide_index=True)
 
 
     # ==================== TAB 2: 전략 A (c_a 컨테이너에 매핑) ====================
