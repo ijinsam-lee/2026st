@@ -557,28 +557,39 @@ else:
         c_sig2.metric("전략B (TIP 모멘텀)", f"{tip_score_b:.2f}%", "공격" if is_attack_b else "방어", delta_color="inverse" if not is_attack_b else "normal")
         c_sig3.metric("전략C (배당수익률)", f"{realtime_dy:.2f}%", "공격" if is_attack_c else "방어", delta_color="inverse" if not is_attack_c else "normal")
 
-        # 시각화 도넛 차트 및 리스트 배치
+        # 시각화 가로 막대 차트 및 리스트 배치
         st.markdown("### 📊 포트폴리오 비중 분배 현황")
         chart_col, table_col = st.columns([5, 5])
         
         with chart_col:
             try:
                 import plotly.express as px
-                fig = px.pie(
-                    df_mix,
-                    values="배분 비중 (%)",
-                    names="자산군 (Ticker)",
-                    hole=0.42,
-                    color_discrete_sequence=px.colors.sequential.Slate
+                # 가로 막대 차트 출력을 위해 비중 오름차순으로 정렬 (최종 그릴 때는 가장 높은 비중이 위에 그려지도록 역순 처리)
+                df_chart = df_mix.sort_values(by="배분 비중 (%)", ascending=True)
+                fig = px.bar(
+                    df_chart,
+                    x="배분 비중 (%)",
+                    y="자산군 (Ticker)",
+                    orientation="h",
+                    text="배분 비중 (%)",
+                )
+                fig.update_traces(
+                    marker_color='#1e293b',  # 대시보드 테마와 통일된 슬레이트 그레이 색상 적용
+                    texttemplate='%{text:.1f}%',
+                    textposition='outside'
                 )
                 fig.update_layout(
                     margin=dict(t=10, b=10, l=10, r=10),
-                    legend=dict(orientation="h", yanchor="bottom", y=-0.35, xanchor="center", x=0.5),
-                    height=280
+                    height=280,
+                    xaxis_title=None,
+                    yaxis_title=None,
+                    xaxis_showgrid=False,
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)'
                 )
                 st.plotly_chart(fig, use_container_width=True)
             except Exception:
-                st.info("시각화 도넛차트 로드 중... (DataFrame 활용 대체 가능)")
+                st.info("시각화 가로 막대차트 로드 중... (DataFrame 활용 대체 가능)")
                 st.bar_chart(df_mix.set_index("자산군 (Ticker)")["배분 비중 (%)"])
                 
         with table_col:
