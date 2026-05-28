@@ -188,12 +188,13 @@ def get_all_financial_data_v2(tickers):
             
     return pd.DataFrame(data_list)
 
-# --- 2년치 데이터 수집을 통해 지난 6개월 월말 포트폴리오를 시뮬레이션하기 위한 함수 ---
+# --- 2년 이상의 데이터 수집을 통해 지난 12개월(최근 1년) 월말 포트폴리오를 시뮬레이션하기 위한 함수 ---
 @st.cache_data(ttl=3600)
 def get_historical_simulation_data(tickers):
     prices_dict = {}
     now = datetime.datetime.now()
-    start_date = (now - datetime.timedelta(days=730)).strftime('%Y-%m-%d')
+    # 1년 전 시그널 계산에는 추가로 과거 12개월의 룩백 기간이 필요하므로 총 800일치의 넉넉한 데이터를 가져옵니다.
+    start_date = (now - datetime.timedelta(days=800)).strftime('%Y-%m-%d')
     for ticker in tickers:
         try:
             asset = yf.Ticker(ticker)
@@ -853,13 +854,13 @@ else:
                     s = data_dict.get(t, {}).get("A_방어스코어", 0.0)
                     st.info(f"🏆 **{t}** : 비중 **100%** (현재가: ${p:.2f}, 모멘텀: {s:.2f}%)")
 
-    # ==================== 대시보드 공통 하단: 지난 6개월간의 월말 기준 리밸런싱 역사 백테스트 ====================
-    with st.spinner("지난 6개월 월말 포트폴리오 데이터를 로딩 및 역동 연산 중..."):
+    # ==================== 대시보드 공통 하단: 지난 12개월(최근 1년)간의 월말 기준 리밸런싱 역사 백테스트 ====================
+    with st.spinner("지난 12개월(최근 1년) 월말 포트폴리오 데이터를 로딩 및 역동 연산 중..."):
         hist_prices, spy_divs_hist = get_historical_simulation_data(ALL_TICKERS)
         
     if hist_prices and "SPY" in hist_prices:
         st.markdown("---")
-        st.markdown("### 📅 월말 기준 리밸런싱 포트폴리오 역사 (최근 6개월)")
+        st.markdown("### 📅 월말 기준 리밸런싱 포트폴리오 역사 (최근 1년)")
         st.caption("매월 최종 영업일 마감 데이터를 기준으로 실시간 모멘텀과 시그널을 연산하여, 익월 1일 아침 리밸런싱 시 적용되는 혼합 포트폴리오 구성 비중입니다.")
         
         spy_series = hist_prices["SPY"]
@@ -870,15 +871,15 @@ else:
         # 년-월별 가장 마지막 영업일의 날짜 추출
         month_ends = df_spy_dates.groupby(['year', 'month']).apply(lambda x: x.index[-1]).tolist()
         
-        # 진행 중인 미완료 상태의 이번 달을 제외하고, 완료된 지난 6개월 수집
+        # 진행 중인 미완료 상태의 이번 달을 제외하고, 완료된 지난 12개월 수집
         now = datetime.datetime.now()
         completed_month_ends = [d for d in month_ends if not (d.year == now.year and d.month == now.month)]
-        completed_6_months = completed_month_ends[-6:]
-        completed_6_months.reverse() # 최신순 정렬 (최근 월이 먼저 보이도록)
+        completed_12_months = completed_month_ends[-12:]
+        completed_12_months.reverse() # 최신순 정렬 (최근 월이 먼저 보이도록)
         
         # 2열 그리드 배치로 공간 극대화 및 깔끔한 출력 유지
         col_h1, col_h2 = st.columns(2)
-        for idx, date in enumerate(completed_6_months):
+        for idx, date in enumerate(completed_12_months):
             target_col = col_h1 if idx % 2 == 0 else col_h2
             
             # 해당 월말 시점의 최종 포트폴리오 및 시그널 역동 연산
