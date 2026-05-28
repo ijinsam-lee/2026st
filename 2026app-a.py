@@ -569,30 +569,48 @@ else:
                 df_chart = df_mix.copy()
                 df_chart["배분 비중 (%)"] = pd.to_numeric(df_chart["배분 비중 (%)"])
                 
-                # 프리미엄 딥 슬레이트 그레이 계열 컬러 팔레트 정의
+                # 자산명과 비중이 같이 표시되는 아름다운 차트 라벨 컬럼 생성
+                df_chart["차트라벨"] = df_chart["자산군 (Ticker)"] + " (" + df_chart["배분 비중 (%)"].astype(str) + "%)"
+                
+                # 프리미엄 다채롭고 직관적인 고대비 컬러 스케일 정의 (시각적 구분 및 차트 밸런스 극대화)
+                premium_colors = [
+                    "#3b82f6",  # 신뢰감을 주는 블루
+                    "#ef4444",  # 시선을 끄는 부드러운 레드
+                    "#10b981",  # 안정적인 에메랄드 그린
+                    "#f59e0b",  # 화사한 오렌지/옐로우
+                    "#8b5cf6",  # 고급스러운 바이올렛 퍼플
+                    "#ec4899",  # 트렌디한 딥 핑크
+                    "#06b6d4",  # 시원한 시안
+                    "#f97316"   # 감각적인 귤색
+                ]
+                
                 color_scale = alt.Scale(
-                    domain=df_chart["자산군 (Ticker)"].tolist(),
-                    range=["#0f172a", "#1e293b", "#334155", "#475569", "#64748b", "#94a3b8", "#cbd5e1", "#e2e8f0"][:len(df_chart)]
+                    domain=df_chart["차트라벨"].tolist(),
+                    range=premium_colors[:len(df_chart)]
                 )
                 
-                # Streamlit 환경에서 무조건 동작하는 초고품질 Altair 도넛 차트 구성
+                # Streamlit 환경에서 무조건 동작하는 완성도 높은 Altair 프리미엄 도넛 차트 구성
                 donut_chart = alt.Chart(df_chart).mark_arc(
-                    innerRadius=55, 
+                    innerRadius=62, 
+                    outerRadius=95,
                     stroke='#ffffff', 
-                    strokeWidth=2
+                    strokeWidth=2.5
                 ).encode(
                     theta=alt.Theta(field="배분 비중 (%)", type="quantitative"),
                     color=alt.Color(
-                        field="자산군 (Ticker)", 
+                        field="차트라벨", 
                         type="nominal", 
                         scale=color_scale,
                         legend=alt.Legend(
                             orient="bottom",
                             title=None,
-                            labelFontSize=11,
+                            labelFontSize=11.5,
+                            labelFontWeight="bold",
                             symbolType="circle",
+                            symbolSize=110,
                             columns=2,
-                            labelColor="#475569"
+                            labelColor="#1e293b",
+                            padding=15
                         )
                     ),
                     tooltip=[
@@ -601,7 +619,7 @@ else:
                         alt.Tooltip("현재가 ($)", title="현재가")
                     ]
                 ).properties(
-                    height=280
+                    height=310
                 ).configure_view(
                     strokeWidth=0
                 )
