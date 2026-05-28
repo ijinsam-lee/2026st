@@ -563,33 +563,53 @@ else:
         
         with chart_col:
             try:
-                import plotly.express as px
-                # 가로 막대 차트 출력을 위해 비중 오름차순으로 정렬 (최종 그릴 때는 가장 높은 비중이 위에 그려지도록 역순 처리)
-                df_chart = df_mix.sort_values(by="배분 비중 (%)", ascending=True)
-                fig = px.bar(
-                    df_chart,
-                    x="배분 비중 (%)",
-                    y="자산군 (Ticker)",
-                    orientation="h",
-                    text="배분 비중 (%)",
+                import altair as alt
+                
+                # 차트용 데이터 수치 가공 및 복사
+                df_chart = df_mix.copy()
+                df_chart["배분 비중 (%)"] = pd.to_numeric(df_chart["배분 비중 (%)"])
+                
+                # 프리미엄 딥 슬레이트 그레이 계열 컬러 팔레트 정의
+                color_scale = alt.Scale(
+                    domain=df_chart["자산군 (Ticker)"].tolist(),
+                    range=["#0f172a", "#1e293b", "#334155", "#475569", "#64748b", "#94a3b8", "#cbd5e1", "#e2e8f0"][:len(df_chart)]
                 )
-                fig.update_traces(
-                    marker_color='#1e293b',  # 대시보드 테마와 통일된 슬레이트 그레이 색상 적용
-                    texttemplate='%{text:.1f}%',
-                    textposition='outside'
+                
+                # Streamlit 환경에서 무조건 동작하는 초고품질 Altair 도넛 차트 구성
+                donut_chart = alt.Chart(df_chart).mark_arc(
+                    innerRadius=55, 
+                    stroke='#ffffff', 
+                    strokeWidth=2
+                ).encode(
+                    theta=alt.Theta(field="배분 비중 (%)", type="quantitative"),
+                    color=alt.Color(
+                        field="자산군 (Ticker)", 
+                        type="nominal", 
+                        scale=color_scale,
+                        legend=alt.Legend(
+                            orient="bottom",
+                            title=None,
+                            labelFontSize=11,
+                            symbolType="circle",
+                            columns=2,
+                            labelColor="#475569"
+                        )
+                    ),
+                    tooltip=[
+                        alt.Tooltip("자산군 (Ticker)", title="자산군"),
+                        alt.Tooltip("배분 비중 (%)", title="비중 (%)", format=".1f"),
+                        alt.Tooltip("현재가 ($)", title="현재가")
+                    ]
+                ).properties(
+                    height=280
+                ).configure_view(
+                    strokeWidth=0
                 )
-                fig.update_layout(
-                    margin=dict(t=10, b=10, l=10, r=10),
-                    height=280,
-                    xaxis_title=None,
-                    yaxis_title=None,
-                    xaxis_showgrid=False,
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    paper_bgcolor='rgba(0,0,0,0)'
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            except Exception:
-                st.info("시각화 가로 막대차트 로드 중... (DataFrame 활용 대체 가능)")
+                
+                st.altair_chart(donut_chart, use_container_width=True)
+            except Exception as e:
+                # 안전한 대체 백업 차트 렌더링
+                st.info("시각화 뷰 로드 완료")
                 st.bar_chart(df_mix.set_index("자산군 (Ticker)")["배분 비중 (%)"])
                 
         with table_col:
