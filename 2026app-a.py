@@ -121,7 +121,7 @@ OFFENSIVE_C = ["FDN", "LIT", "SMH", "XLE"]  # 4대 주도 섹터
 DEFENSIVE_C = ["GLD", "PDBC", "OILK"]       # 3대 원자재 방어자산
 
 # 중복 없는 전체 티커 추출 (미국 ETF 랭킹 비교용 인기 자산군 SCHD, JEPI, TQQQ, SOXL, DIA, IWM, XLF 추가)
-ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C + ["SOXX", "URA", "NLR","EWY", "SCHD", "JEPI", "TQQQ", "SOXL", "DIA", "IWM", "XLF"]))
+ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C + ["SCHD", "JEPI", "TQQQ", "SOXL", "DIA", "IWM", "XLF"]))
 
 # 관심매크로 지표 정의 및 심볼 매핑
 MACRO_TICKERS = {
@@ -554,13 +554,14 @@ else:
     realtime_dy = get_sp500_dividend_yield()
     is_attack_c = realtime_dy > 1.33
     
-    # ------------------ 메인 탭 선언 (5번째 탭 '미국 ETF 랭킹' 추가) ------------------
-    tab_2026, tab_a, tab_b, tab_c, tab_rank = st.tabs([
+    # ------------------ 메인 탭 선언 (6번째 탭 '복리 계산기' 완벽 추가) ------------------
+    tab_2026, tab_a, tab_b, tab_c, tab_rank, tab_calc = st.tabs([
         "🏆 2026 혼합전략", 
         "🛡️ 전략 A", 
         "⚡ 전략 B", 
         "🔄 전략 C",
-        "🇺🇸 미국 ETF 랭킹"
+        "🇺🇸 미국 ETF 랭킹",
+        "🧮 복리 계산기"
     ])
 
     # 탭별 독립 렌더링을 위한 컨테이너 할당
@@ -574,6 +575,8 @@ else:
         c_c = st.container()
     with tab_rank:
         c_rank = st.container()
+    with tab_calc:
+        c_calc = st.container()
 
     # ==================== 각 개별 전략의 자산 배분 비중 선산출 ====================
     # [전략 A 할당 산출]
@@ -1166,6 +1169,134 @@ else:
         # 전체 랭킹 테이블 출력
         st.markdown("### 🏆 실시간 모멘텀 순위표")
         st.dataframe(df_ranking, use_container_width=True)
+
+
+    # ==================== TAB 6: 복리 계산기 (c_calc 컨테이너에 매핑) ====================
+    with c_calc:
+        st.header("🧮 복리의 마법 & 낙원 계산기")
+        st.markdown(
+            "자산배분 백테스트의 실제 연평균 수익률(CAGR)을 기반으로, 매월 적립식 저축이 유발하는 "
+            "미래 자산 성장 경로를 정밀하게 예측합니다. **세율 적용** 및 **물가상승률 할인**까지 연산하는 실전형 복리 계산기입니다."
+        )
+
+        # 복리 연산용 세션스테이트 목표 수익률 동기화 초기화
+        if "cagr_input" not in st.session_state:
+            st.session_state.cagr_input = 38.7
+
+        # 4대 자산배분 성과 CAGR 퀵 프리셋 버튼 배정
+        st.markdown("##### ⚡ 자산배분 전략 실측 CAGR 퀵 프리셋")
+        col_pre1, col_pre2, col_pre3, col_pre4 = st.columns(4)
+        if col_pre1.button("🏆 2026 혼합 (38.7%)"):
+            st.session_state.cagr_input = 38.7
+            st.rerun()
+        if col_pre2.button("🛡️ 전략 A (27.3%)"):
+            st.session_state.cagr_input = 27.3
+            st.rerun()
+        if col_pre3.button("⚡ 전략 B (36.4%)"):
+            st.session_state.cagr_input = 36.4
+            st.rerun()
+        if col_pre4.button("🔄 전략 C (46.7%)"):
+            st.session_state.cagr_input = 46.7
+            st.rerun()
+
+        # 데이터 세부 입력 폼 슬라이더 배치
+        st.markdown("---")
+        col_inp1, col_inp2 = st.columns(2)
+        with col_inp1:
+            calc_init = st.number_input("초기 투자금 (만원 ₩)", min_value=0, value=2000, step=100)
+            calc_monthly = st.number_input("매월 저축/적립금 (만원 ₩)", min_value=0, value=100, step=10)
+            calc_years = st.slider("시뮬레이션 투자 기간 (년)", min_value=1, max_value=40, value=15)
+        with col_inp2:
+            calc_cagr = st.number_input("연 목표 수익률 CAGR (%)", min_value=0.0, max_value=100.0, key="cagr_input", step=0.1)
+            calc_inflation = st.number_input("연 예상 물가상승률 (%)", min_value=0.0, max_value=20.0, value=3.0, step=0.1)
+            calc_tax_opt = st.selectbox("세율 설정", ["일반과세 (15.4%)", "미국주식양도세 (22.0%)", "비과세 계좌 (0.0% / ISA 및 연금저축)", "사용자 정의"])
+            
+            if calc_tax_opt == "일반과세 (15.4%)":
+                tax_rate = 15.4
+            elif calc_tax_opt == "미국주식양도세 (22.0%)":
+                tax_rate = 22.0
+            elif calc_tax_opt == "비과세 계좌 (0.0% / ISA 및 연금저축)":
+                tax_rate = 0.0
+            else:
+                tax_rate = st.number_input("세율 직접 입력 (%)", min_value=0.0, max_value=50.0, value=15.4, step=0.1)
+
+        # 복리 연산 로직 (월 복리 정밀 시뮬레이션 및 세금, 물가 역산)
+        records = []
+        curr_nominal = calc_init * 10000
+        curr_contribution = calc_init * 10000
+        monthly_contrib = calc_monthly * 10000
+        r_monthly = (1 + calc_cagr / 100) ** (1/12) - 1 if calc_cagr > 0 else 0.0
+
+        for y in range(1, calc_years + 1):
+            # 12개월간 매월 적립 및 복리 연산 수행
+            for m in range(12):
+                curr_contribution += monthly_contrib
+                curr_nominal = (curr_nominal + monthly_contrib) * (1 + r_monthly)
+            
+            # 누적 평가금에서 발생한 세전 투자 수익금 정산
+            profit = curr_nominal - curr_contribution
+            tax_due = profit * (tax_rate / 100) if profit > 0 else 0.0
+            curr_after_tax = curr_nominal - tax_due
+            
+            # 인플레이션을 감안한 현재 가치로의 역산 할인액 구하기
+            real_value = curr_after_tax / ((1 + calc_inflation / 100) ** y)
+            
+            records.append({
+                "년차": f"{y}년차",
+                "누적 납입원금": round(curr_contribution),
+                "세전 일반복리": round(curr_nominal),
+                "세후 수령예정액": round(curr_after_tax),
+                "세후 실질가치 (물가반영)": round(real_value)
+            })
+
+        df_calc = pd.DataFrame(records)
+
+        # 한국인이 보기에 아주 우아하고 아름다운 억/만원 화폐 표기식 헬퍼 함수
+        def format_krw(val):
+            if val <= 0:
+                return "0원"
+            if val >= 100000000:
+                eok = int(val // 100000000)
+                man = int((val % 100000000) // 10000)
+                if man > 0:
+                    return f"{eok}억 {man:,}만원"
+                return f"{eok}억원"
+            else:
+                man = int(val // 10000)
+                return f"{man:,}만원"
+
+        # 최종 목표 요약 패널 구성
+        last_rec = records[-1]
+        st.markdown("### 🏆 시뮬레이션 최종 기대 성과 요약")
+        sum_col1, sum_col2, sum_col3 = st.columns(3)
+        sum_col1.metric("총 납입원금", format_krw(last_rec["누적 납입원금"]))
+        sum_col2.metric("세후 수령액", format_krw(last_rec["세후 수령예정액"]))
+        sum_col3.metric("실질구매력 가치", format_krw(last_rec["세후 실질가치 (물가반영)"]))
+
+        # 복리 효과 시각화 라인 차트 (Altair 활용)
+        st.markdown("### 📈 복리 효과 가시화 차트")
+        df_melt = df_calc.melt(id_vars="년차", value_vars=["누적 납입원금", "세전 일반복리", "세후 수령예정액", "세후 실질가치 (물가반영)"], var_name="구분", value_name="자산액")
+        
+        try:
+            import altair as alt
+            # 모바일 최적화 고해상도 라인 그래프 구성
+            line_chart = alt.Chart(df_melt).mark_line(point=True, size=2.5).encode(
+                x=alt.X("년차:N", sort=None, title="년차"),
+                y=alt.Y("자산액:Q", title="평가액 (₩)"),
+                color=alt.Color("구분:N", scale=alt.Scale(range=["#94a3b8", "#ef4444", "#10b981", "#3b82f6"])),
+                tooltip=[alt.Tooltip("년차"), alt.Tooltip("구분"), alt.Tooltip("자산액", format=",.0f")]
+            ).properties(height=350)
+            st.altair_chart(line_chart, use_container_width=True)
+        except Exception:
+            st.line_chart(df_calc.set_index("년차"))
+
+        # 포맷팅 완료된 테이블 일람 출력
+        st.markdown("### 📊 연도별 세부 자산 성장 상세표")
+        df_display = df_calc.copy()
+        for col in ["누적 납입원금", "세전 일반복리", "세후 수령예정액", "세후 실질가치 (물가반영)"]:
+            df_display[col] = df_display[col].apply(format_krw)
+        
+        st.dataframe(df_display, use_container_width=True)
 
 
     # ==================== 대시보드 공통 하단: 지난 12개월(최근 1년)간의 월말 기준 리밸런싱 역사 백테스트 ====================
