@@ -123,11 +123,11 @@ DEFENSIVE_C = ["GLD", "PDBC", "OILK"]       # 3대 원자재 방어자산
 # 중복 없는 전체 티커 추출
 ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C))
 
-# 관심매크로 지표 정의 및 심볼 매핑
+# 관심매크로 지표 정의 및 심볼 매핑 (표준 외환코드 USDCNY=X, USDJPY=X로 조치)
 MACRO_TICKERS = {
     "달러/원": "USDKRW=X",
-    "달러/중국 위안": "CNY=X",
-    "달러/엔": "JPY=X",
+    "달러/중국 위안": "USDCNY=X",
+    "달러/엔": "USDJPY=X",
     "미국 달러 지수": "DX-Y.NYB",
     "미국 10년물 국채 금리": "^TNX",
     "WTI유": "CL=F",
@@ -142,44 +142,50 @@ MACRO_TICKERS = {
 def get_macro_market_pulse():
     macro_data = []
     for name, symbol in MACRO_TICKERS.items():
+        price_val = "-"
+        delta_val = "0.00"
+        delta_pct_val = "0.00%"
+        raw_delta_val = 0.0
+        
         try:
             ticker = yf.Ticker(symbol)
-            # 장마감 이후나 주말을 감안하여 5일간의 데이터를 가져와 가용 최신값 비교
+            # 주말 데이터 대응을 위해 넉넉히 5일 데이터를 조회
             hist = ticker.history(period="5d")
-            if not hist.empty:
-                current_price = hist['Close'].iloc[-1]
-                prev_price = hist['Close'].iloc[-2] if len(hist) >= 2 else current_price
-                delta = current_price - prev_price
-                delta_pct = (delta / prev_price) * 100 if prev_price > 0 else 0.0
-                
-                # 금리의 경우 백분율 표시로 보정 지탱
-                if symbol == "^TNX":
-                    # TNX 자체 수치가 이미 퍼센트 단위(예: 4.497)이므로 그대로 출력
-                    display_price = f"{current_price:.3f}%"
-                    display_delta = f"{delta:+.3f}"
-                elif "KRW=X" in symbol:
-                    display_price = f"{current_price:,.2f}원"
-                    display_delta = f"{delta:+.2f}"
-                elif "=X" in symbol:
-                    display_price = f"{current_price:,.4f}"
-                    display_delta = f"{delta:+.4f}"
-                else:
-                    display_price = f"{current_price:,.2f}"
-                    display_delta = f"{delta:+.2f}"
-                
-                macro_data.append({
-                    "name": name,
-                    "symbol": symbol,
-                    "price": display_price,
-                    "delta": display_delta,
-                    "delta_pct": f"{delta_pct:+.2f}%",
-                    "raw_delta": delta
-                })
-            else:
-                # 데이터 없음 백업값
-                macro_data.append({"name": name, "symbol": symbol, "price": "-", "delta": "0.00", "delta_pct": "0.00%", "raw_delta": 0.0})
+            if not hist.empty and 'Close' in hist.columns and len(hist) >= 1:
+                closes = hist['Close'].dropna()
+                if len(closes) >= 1:
+                    current_price = closes.iloc[-1]
+                    prev_price = closes.iloc[-2] if len(closes) >= 2 else current_price
+                    delta = current_price - prev_price
+                    delta_pct = (delta / prev_price) * 100 if prev_price > 0 else 0.0
+                    
+                    if symbol == "^TNX":
+                        price_val = f"{current_price:.3f}%"
+                        delta_val = f"{delta:+.3f}"
+                    elif "KRW=X" in symbol:
+                        price_val = f"{current_price:,.2f}원"
+                        delta_val = f"{delta:+.2f}"
+                    elif "=X" in symbol:
+                        price_val = f"{current_price:,.4f}"
+                        delta_val = f"{delta:+.4f}"
+                    else:
+                        price_val = f"{current_price:,.2f}"
+                        delta_val = f"{delta:+.2f}"
+                    
+                    delta_pct_val = f"{delta_pct:+.2f}%"
+                    raw_delta_val = delta
         except Exception:
-            macro_data.append({"name": name, "symbol": symbol, "price": "-", "delta": "0.00", "delta_pct": "0.00%", "raw_delta": 0.0})
+            # 개별 지표 에러 발생 시에도 시황판 전체 크래시를 차단하고 기본값을 적용해 렌더링 유지
+            pass
+            
+        macro_data.append({
+            "name": name,
+            "symbol": symbol,
+            "price": price_val,
+            "delta": delta_val,
+            "delta_pct": delta_pct_val,
+            "raw_delta": raw_delta_val
+        })
     return macro_data
 
 # 글로벌 매크로 관심 시황판 렌더링
@@ -210,9 +216,12 @@ with st.expander("🌍 실시간 글로벌 매크로 시황판 (내 관심목록
 def get_usd_krw_rate():
     try:
         usd_krw = yf.Ticker("USDKRW=X")
-        hist = usd_krw.history(period="1d")
-        if not hist.empty:
-            return float(hist['Close'].iloc[-1])
+        # 주말 대응을 위해 5d 데이터를 확보한 뒤 최신 종가 확인
+        hist = usd_krw.history(period="5d")
+        if not hist.empty and 'Close' in hist.columns:
+            closes = hist['Close'].dropna()
+            if len(closes) >= 1:
+                return float(closes.iloc[-1])
     except Exception:
         pass
     return 1380.0  # 기본 백업 환율
@@ -239,9 +248,11 @@ def get_sp500_dividend_yield():
             sum_divs = last_year_divs.sum()
             
             hist = spy.history(period="1mo")
-            if not hist.empty:
-                curr_price = hist['Close'].iloc[-1]
-                return (sum_divs / curr_price) * 100
+            if not hist.empty and 'Close' in hist.columns:
+                closes = hist['Close'].dropna()
+                if len(closes) >= 1:
+                    curr_price = closes.iloc[-1]
+                    return (sum_divs / curr_price) * 100
     except Exception as e:
         pass
     return 1.32  # 기본값 백업
@@ -257,17 +268,21 @@ def get_all_financial_data_v2(tickers):
         try:
             asset = yf.Ticker(ticker)
             hist = asset.history(start=start_date, interval="1mo")
-            if len(hist) < 12:
+            if len(hist) < 12 or 'Close' not in hist.columns:
+                continue
+            
+            closes = hist['Close'].dropna()
+            if len(closes) < 12:
                 continue
             
             # 가장 최근 종가 및 과거 종가 추출
-            current_price = hist['Close'].iloc[-1]
-            p1 = hist['Close'].iloc[-2] if len(hist) >= 2 else current_price
-            p3 = hist['Close'].iloc[-4] if len(hist) >= 4 else current_price
-            p5 = hist['Close'].iloc[-6] if len(hist) >= 6 else current_price # 전략B/C 방어용 5개월 가격
-            p6 = hist['Close'].iloc[-7] if len(hist) >= 7 else current_price
-            p9 = hist['Close'].iloc[-10] if len(hist) >= 10 else current_price
-            p12 = hist['Close'].iloc[-13] if len(hist) >= 13 else hist['Close'].iloc[0]
+            current_price = closes.iloc[-1]
+            p1 = closes.iloc[-2] if len(closes) >= 2 else current_price
+            p3 = closes.iloc[-4] if len(closes) >= 4 else current_price
+            p5 = closes.iloc[-6] if len(closes) >= 6 else current_price # 전략B/C 방어용 5개월 가격
+            p6 = closes.iloc[-7] if len(closes) >= 7 else current_price
+            p9 = closes.iloc[-10] if len(closes) >= 10 else current_price
+            p12 = closes.iloc[-13] if len(closes) >= 13 else closes.iloc[0]
             
             # 수익률 계산 (%)
             r1 = ((current_price - p1) / p1) * 100
@@ -300,7 +315,7 @@ def get_all_financial_data_v2(tickers):
                 "A_방어스코어": round(score_a_def, 2),
                 "B_공격스코어": round(score_b_off, 2),
                 "B_단순모멘텀": round(score_b_def_simple, 2),
-                "raw_closes": hist['Close'].tolist()
+                "raw_closes": closes.tolist()
             })
         except Exception as e:
             st.error(f"{ticker} 데이터를 가져오는 중 오류 발생: {e}")
@@ -1137,10 +1152,3 @@ else:
                         st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
                     else:
                         st.write("⚠️ 해당 기간 데이터 부족")
-```
-eof
-
-### 🔄 업데이트 내용 요약:
-1. **글로벌 실시간 매크로 시황판 구축**: 타이틀 바로 아래에 배치되어 페이지 로딩 시 즉각 확인 가능합니다. 변동성 있는 가격 데이터는 대한민국 표준 주식 색상(상승은 빨간색, 하락은 파란색)을 따르는 CSS 스타일로 입혀져 가시성이 매우 뛰어납니다.
-2. **외환 및 채권 금리, 원자재 정교화**: 미국 10년물 국채 금리, VIX 지수, WTI 원유, 달러화 가치와 엔화, 위안화 및 원화 환율을 실시간으로 가져와 동기화합니다.
-3. **가볍고 빠른 캐시 관리**: 시황 정보는 사용자 브라우저를 보호하고 로딩 속도를 향상하기 위해 5분(`ttl=300`) 캐싱을 적용해 부드러운 화면 전환이 가능합니다.
