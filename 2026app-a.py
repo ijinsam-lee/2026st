@@ -323,14 +323,16 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
     # 3. 전략 C 배분
     dy_val = 1.32
     if not spy_divs.empty:
-        start_dt = target_date - pd.Timedelta(days=365)
-        if spy_divs.index.tz is not None:
-            start_dt = start_dt.tz_localize(spy_divs.index.tz)
-            target_dt_tz = target_date.tz_localize(spy_divs.index.tz)
-        else:
-            target_dt_tz = target_date
+        # 타겟 날짜를 안전하게 timezone-naive로 통일
+        target_date_naive = target_date.tz_localize(None) if target_date.tz is not None else target_date
+        start_dt = target_date_naive - pd.Timedelta(days=365)
+        
+        # S&P500 배당률 데이터셋 인덱스도 안전하게 timezone-naive 형태로 통일하여 시계열 충돌 해결
+        spy_divs_naive = spy_divs.copy()
+        if spy_divs_naive.index.tz is not None:
+            spy_divs_naive.index = spy_divs_naive.index.tz_localize(None)
             
-        divs_in_range = spy_divs.loc[start_dt:target_dt_tz]
+        divs_in_range = spy_divs_naive.loc[start_dt:target_date_naive]
         sum_divs = divs_in_range.sum()
         
         spy_price = ticker_metrics.get("SPY", {}).get("curr", None)
@@ -406,7 +408,6 @@ else:
 
     # S&P 500 실시간 배당수익률 산출
     realtime_dy = get_sp500_dividend_yield()
-    is_attack_c = realtime_dy > 1.33
     
     # ------------------ 메인 탭 선언 ------------------
     tab_2026, tab_a, tab_b, tab_c = st.tabs([
@@ -425,6 +426,47 @@ else:
         c_b = st.container()
     with tab_c:
         c_c = st.container()
+
+    # ==================== 전략 C 탭 내부에서만 조절바 렌더링 ====================
+    with c_c:
+        st.header("🔄 전략 C (섹터로테이션)")
+        st.markdown(
+            "**1단계: 카나리아 신호 판단 (S&P 500 배당수익률)** \n"
+            "배당수익률이 **1.33%** 초과 시 주식 저평가로 판단하여 공격 모드, 이하일 경우 시장 과열로 판단하여 방어 모드로 진입합니다."
+        )
+        
+        # --- 오직 전략 C 내부에서만 조절바 및 설정 패널 노출 ---
+        st.markdown("""
+            <div class="control-panel">
+                <div class="control-header">⚙️ 전략 C 제어 및 시뮬레이션 설정</div>
+                <div class="control-subheader">S&P 500 배당수익률을 직접 조절해 보세요. /배당수익률 조회 사이트 https://en.macromicro.me/series/1635/us-sp500-dividend-yield /조정값에 따라 하단의 포트폴리오 비중이 역동적으로 자동 재연산됩니다. (공격 신호 기준값: 1.33% 초과)</div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        col_ctrl1, col_ctrl2 = st.columns([3, 1])
+        with col_ctrl1:
+            dy_input = st.slider(
+                "S&P 500 배당수익률 조절 (%)",
+                min_value=0.0,
+                max_value=5.0,
+                value=realtime_dy,
+                step=0.01,
+                key="dy_slider"
+            )
+        with col_ctrl2:
+            dy_input_num = st.number_input(
+                "수동 수치",
+                min_value=0.0,
+                max_value=10.0,
+                value=dy_input,
+                step=0.01,
+                label_visibility="visible",
+                key="dy_num"
+            )
+            if dy_input_num != dy_input:
+                dy_input = dy_input_num
+                
+        is_attack_c = dy_input > 1.33
 
     # ==================== 각 개별 전략의 자산 배분 비중 선산출 ====================
     # [전략 A 할당 산출]
@@ -472,7 +514,7 @@ else:
         else:
             alloc_b["CASH (현금)"] = 100.0
 
-    # [전략 C 할당 산출] (계산된 realtime_dy 수치 반영됨)
+    # [전략 C 할당 산출] (탭 내부 조절바의 dy_input 수치 반영됨)
     alloc_c = {}
     if is_attack_c:
         df_off_c = df_all[df_all["Ticker"].isin(OFFENSIVE_C)].copy()
@@ -542,7 +584,7 @@ else:
         c_sig1, c_sig2, c_sig3 = st.columns(3)
         c_sig1.metric("전략A (TIP 비율)", f"{tip_ratio:.3f}", "공격" if is_attack_a else "방어", delta_color="inverse" if not is_attack_a else "normal")
         c_sig2.metric("전략B (TIP 모멘텀)", f"{tip_score_b:.2f}%", "공격" if is_attack_b else "방어", delta_color="inverse" if not is_attack_b else "normal")
-        c_sig3.metric("전략C (배당수익률)", f"{realtime_dy:.2f}%", "공격" if is_attack_c else "방어", delta_color="inverse" if not is_attack_c else "normal")
+        c_sig3.metric("전략C (배당수익률)", f"{dy_input:.2f}%", "공격" if is_attack_c else "방어", delta_color="inverse" if not is_attack_c else "normal")
 
         # 추천 포트폴리오 자산 리스트
         st.markdown("### 🎯 2026년 혼합 자산 배분 비중")
@@ -657,22 +699,12 @@ else:
                     st.info(f"🏆 **{t}** : 비중 **100%** (현재가: ${p:.2f}, 자체 모멘텀: {s:.2f}%)")
 
 
-    # ==================== TAB 4: 전략 C (c_c 컨테이너에 매핑) ====================
+    # ==================== TAB 4: 전략 C 결과 추가 매핑 (c_c 컨테이너에 매핑) ====================
     with c_c:
-        # S&P 500 실시간 배당률 계산 현황 안내 패널 (수동 조절 위젯 완벽 제거)
-        st.markdown(f"""
-            <div class="control-panel">
-                <div class="control-header">📊 S&P 500 (SPY) 실시간 배당수익률 모니터링</div>
-                <div class="control-subheader">
-                    야후 파이낸스(yfinance) API로부터 소수 및 백분율 단위를 실시간으로 정합 보정하여 산출한 데이터입니다.<br/>
-                    • <b>실시간 배당수익률: {realtime_dy:.2f}%</b><br/>
-                    • <b>모드 분류 기준선: 1.33%</b> (초과 시 공격 모드 / 이하 시 방어 모드)
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-        
+        # (시뮬레이션 조절바 및 카나리아 타이틀은 선언부 최상위 c_c 렌더링 블록에서 기선언됨)
+        # 하단 자산 결과들만 이 위치에서 이어서 출력
         if is_attack_c:
-            st.success(f"🔥 **현재 모드: 공격 자산 모드** (실시간 배당수익률 {realtime_dy:.2f}% > 1.33%) - 시장 저평가 국면으로 주식을 매수합니다.")
+            st.success(f"🔥 **현재 모드: 공격 자산 모드** (배당수익률 {dy_input:.2f}% > 1.33%) - 시장 저평가 국면으로 주식을 매수합니다.")
             
             df_off_c = df_all[df_all["Ticker"].isin(OFFENSIVE_C)].copy()
             df_off_c = df_off_c.sort_values(by="A_공격스코어", ascending=False)
@@ -690,7 +722,7 @@ else:
                 s = data_dict.get(t, {}).get("A_공격스코어", 0.0)
                 st.info(f"🏆 **{t}** : 비중 **100%** (현재가: ${p:.2f}, 모멘텀: {s:.2f}%)")
         else:
-            st.warning(f"🛡️ **현재 모드: 방어 자산 모드** (실시간 배당수익률 {realtime_dy:.2f}% <= 1.33%) - 시장 과열 국면으로 원자재 자산으로 대피합니다.")
+            st.warning(f"🛡️ **현재 모드: 방어 자산 모드** (배당수익률 {dy_input:.2f}% <= 1.33%) - 시장 과열 국면으로 원자재 자산으로 대피합니다.")
             
             df_def_c = df_all[df_all["Ticker"].isin(DEFENSIVE_C)].copy()
             df_def_c = df_def_c.sort_values(by="A_방어스코어", ascending=False)
