@@ -65,6 +65,42 @@ st.markdown("""
         font-size: 0.8rem !important;
         line-height: 1.45 !important;
     }
+    
+    /* 매크로 시황판 카드 스타일 */
+    .macro-card {
+        background-color: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 10px 12px;
+        margin-bottom: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+    }
+    .macro-title {
+        font-size: 0.78rem;
+        color: #64748b;
+        font-weight: 600;
+        margin-bottom: 2px;
+    }
+    .macro-value {
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #0f172a;
+    }
+    .macro-delta-up {
+        font-size: 0.75rem;
+        color: #dc2626;
+        font-weight: 600;
+    }
+    .macro-delta-down {
+        font-size: 0.75rem;
+        color: #2563eb;
+        font-weight: 600;
+    }
+    .macro-delta-equal {
+        font-size: 0.75rem;
+        color: #64748b;
+        font-weight: 600;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -86,6 +122,89 @@ DEFENSIVE_C = ["GLD", "PDBC", "OILK"]       # 3대 원자재 방어자산
 
 # 중복 없는 전체 티커 추출
 ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C))
+
+# 관심매크로 지표 정의 및 심볼 매핑
+MACRO_TICKERS = {
+    "달러/원": "USDKRW=X",
+    "달러/중국 위안": "CNY=X",
+    "달러/엔": "JPY=X",
+    "미국 달러 지수": "DX-Y.NYB",
+    "미국 10년물 국채 금리": "^TNX",
+    "WTI유": "CL=F",
+    "S&P 500 VIX": "^VIX",
+    "US 500 (S&P)": "^GSPC",
+    "US Tech 100 (나스닥)": "^NDX",
+    "인베스코QQQ": "QQQ",
+    "코스피 200": "^KS200"
+}
+
+@st.cache_data(ttl=300)  # 시황 데이터는 5분 단위 캐싱
+def get_macro_market_pulse():
+    macro_data = []
+    for name, symbol in MACRO_TICKERS.items():
+        try:
+            ticker = yf.Ticker(symbol)
+            # 장마감 이후나 주말을 감안하여 5일간의 데이터를 가져와 가용 최신값 비교
+            hist = ticker.history(period="5d")
+            if not hist.empty:
+                current_price = hist['Close'].iloc[-1]
+                prev_price = hist['Close'].iloc[-2] if len(hist) >= 2 else current_price
+                delta = current_price - prev_price
+                delta_pct = (delta / prev_price) * 100 if prev_price > 0 else 0.0
+                
+                # 금리의 경우 백분율 표시로 보정 지탱
+                if symbol == "^TNX":
+                    # TNX 자체 수치가 이미 퍼센트 단위(예: 4.497)이므로 그대로 출력
+                    display_price = f"{current_price:.3f}%"
+                    display_delta = f"{delta:+.3f}"
+                elif "KRW=X" in symbol:
+                    display_price = f"{current_price:,.2f}원"
+                    display_delta = f"{delta:+.2f}"
+                elif "=X" in symbol:
+                    display_price = f"{current_price:,.4f}"
+                    display_delta = f"{delta:+.4f}"
+                else:
+                    display_price = f"{current_price:,.2f}"
+                    display_delta = f"{delta:+.2f}"
+                
+                macro_data.append({
+                    "name": name,
+                    "symbol": symbol,
+                    "price": display_price,
+                    "delta": display_delta,
+                    "delta_pct": f"{delta_pct:+.2f}%",
+                    "raw_delta": delta
+                })
+            else:
+                # 데이터 없음 백업값
+                macro_data.append({"name": name, "symbol": symbol, "price": "-", "delta": "0.00", "delta_pct": "0.00%", "raw_delta": 0.0})
+        except Exception:
+            macro_data.append({"name": name, "symbol": symbol, "price": "-", "delta": "0.00", "delta_pct": "0.00%", "raw_delta": 0.0})
+    return macro_data
+
+# 글로벌 매크로 관심 시황판 렌더링
+with st.spinner("관심 시황판 실시간 매크로 지표 동기화 중..."):
+    macro_pulse = get_macro_market_pulse()
+
+# 타이틀 바로 아래에 아코디언 형태로 배치하여 접근성 및 가독성 확보
+with st.expander("🌍 실시간 글로벌 매크로 시황판 (내 관심목록)", expanded=True):
+    # 모바일 및 데스크탑 가로 배열을 위한 컬럼 분할 (4열 구조)
+    cols = st.columns(4)
+    for idx, item in enumerate(macro_pulse):
+        col_to_use = cols[idx % 4]
+        delta_class = "macro-delta-equal"
+        if item["raw_delta"] > 0:
+            delta_class = "macro-delta-up"
+        elif item["raw_delta"] < 0:
+            delta_class = "macro-delta-down"
+            
+        col_to_use.markdown(f"""
+            <div class="macro-card">
+                <div class="macro-title">{item['name']} <small style='color:#94a3b8; font-size:0.65rem;'>{item['symbol']}</small></div>
+                <div class="macro-value">{item['price']}</div>
+                <div class="{delta_class}">{item['delta']} ({item['delta_pct']})</div>
+            </div>
+        """, unsafe_allow_html=True)
 
 # 실시간 원/달러 환율 구하는 헬퍼 함수
 def get_usd_krw_rate():
@@ -392,7 +511,6 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
     clean_portfolio = {t: round(w, 2) for t, w in mixed_portfolio.items() if w > 0.01}
     return clean_portfolio, is_attack_a_hist, is_attack_b_hist, is_attack_c_hist, dy_val
 
-
 # 데이터 실시간 가져오기
 with st.spinner("야후 파이낸스 실시간 데이터를 통합 집계 중..."):
     df_all = get_all_financial_data_v2(ALL_TICKERS)
@@ -542,7 +660,6 @@ else:
             })
     df_mix = pd.DataFrame(mix_data).sort_values(by="배분 비중 (%)", ascending=False)
 
-
     # ==================== TAB 1: 2026년 혼합 전략 (c_2026 컨테이너에 매핑) ====================
     with c_2026:
         st.header("🏆 2026년 혼합 전략")
@@ -552,7 +669,7 @@ else:
         )
 
         # 전략 설명 아코디언 추가 (PDF 데이터 기반)
-        with st.expander("📖 2026년 혼합전략 상세 운용원칙 및 기대성과"):
+        with st.expander("📖 2026년 혼합전략 상세 운용원칙 및 기대성과 (2026년_전략_-_3가지_전략_혼합_포트폴리오.pdf)"):
             st.markdown("""
             ### 🎯 혼합전략 기본 개요
             2026년 전략은 성격이 다른 3가지 동적 자산배분 전략을 동일 비중으로 혼합하여 **극대화된 안정성**과 **풍부한 수익성**의 황금 균형을 달성합니다.
@@ -561,13 +678,14 @@ else:
             * **전략B (33.33%)**: TIP 모멘텀 신호 기반 레버리지 공격형 포트폴리오 (고수익 집중)
             * **전략C (33.33%)**: S&P 500 배당수익률 기반 주도 섹터 로테이션 포트폴리오 (중간형)
             
-            ### 📈 실제 백테스트 지표 (2026혼합전략.jpg 데이터 반영)
+            ### 📈 실제 백테스트 지표 (2026혼합전략.jpg 실측 데이터 반영)
             """)
-            col_perf1, col_perf2, col_perf3, col_perf4 = st.columns(4)
+            col_perf1, col_perf2, col_perf3, col_perf4, col_perf5 = st.columns(5)
             col_perf1.metric("연환산 수익률 (CAGR)", "38.7%")
             col_perf2.metric("최대 낙폭 (MDD)", "-13.2%")
             col_perf3.metric("샤프 지수 (Sharpe)", "2.03")
-            col_perf4.metric("소티노 지수 / 변동성", "3.34 / 17.9%")
+            col_perf4.metric("소티노 지수 (Sortino)", "3.34")
+            col_perf5.metric("연 변동성 (Volatility)", "17.9%")
             
             st.markdown("""
             ### 🔄 실전 운용 프로세스
@@ -710,13 +828,12 @@ else:
                 
             st.dataframe(pd.DataFrame(calc_data), use_container_width=True, hide_index=True)
 
-
     # ==================== TAB 2: 전략 A (c_a 컨테이너에 매핑) ====================
     with c_a:
         st.header("🛡️ 전략 A (안정형)")
         
         # 전략A 가이드라인 추가
-        with st.expander("📖 전략 A 상세 운용원칙 및 기대성과"):
+        with st.expander("📖 전략 A 상세 운용원칙 및 기대성과 (전략A_(22.6)_정확한_운용원칙_분석.pdf)"):
             st.markdown("""
             ### 🛡️ 전략 A의 핵심 구조 (2단계 선택 시스템)
             시장의 핵심 선행지표인 물가연동채(TIP)를 통해 거시경제 국면을 판독하고, 대형 우량 자산 중심의 안정 투자를 지향합니다.
@@ -726,13 +843,14 @@ else:
               - **공격 국면 (공격 자산 13개)**: 모멘텀 스코어가 가장 높은 상위 4개 종목에 각 **$25\%$씩 균등 배분**합니다.
               - **방어 국면 (방어 자산 4개)**: 모멘텀 스코어 상위 1개 자산에 **$100\%$ 집중 투자**하되, 해당 자산의 모멘텀 스코어마저 음수($< 0$)인 극단적 상황 시 **현금($100\%$)으로 전액 대피**합니다.
             
-            ### 📈 실제 백테스트 지표 (전략a.jpg 데이터 반영)
+            ### 📈 실제 백테스트 지표 (전략a.jpg 실측 데이터 반영)
             """)
-            col_a1, col_a2, col_a3, col_a4 = st.columns(4)
+            col_a1, col_a2, col_a3, col_a4, col_a5 = st.columns(5)
             col_a1.metric("연환산 수익률 (CAGR)", "27.3%")
             col_a2.metric("최대 낙폭 (MDD)", "-6.7%")
             col_a3.metric("샤프 지수 (Sharpe)", "1.82")
-            col_a4.metric("소티노 지수 / 변동성", "4.17 / 13.6%")
+            col_a4.metric("소티노 지수 (Sortino)", "4.17")
+            col_a5.metric("연 변동성 (Volatility)", "13.6%")
             
             st.markdown("""
             ### 📝 모멘텀 계산 공식
@@ -791,13 +909,12 @@ else:
                     s = data_dict.get(t, {}).get("A_방어스코어", 0.0)
                     st.info(f"**{t}** : 비중 **100%** (현재가: ${p:.2f}, 모멘텀: {s:.2f}%)")
 
-
     # ==================== TAB 3: 전략 B (c_b 컨테이너에 매핑) ====================
     with c_b:
         st.header("⚡ 전략 B (공격형)")
         
         # 전략B 가이드라인 추가
-        with st.expander("📖 전략 B 상세 운용원칙 및 기대성과"):
+        with st.expander("📖 전략 B 상세 운용원칙 및 기대성과 (전략B_정확한_운용원칙_분석_(36.8).pdf)"):
             st.markdown("""
             ### ⚡ 전략 B의 핵심 구조 (레버리지 집중 투자형)
             전략B는 채권 실질금리 모멘텀의 급격한 변화를 바탕으로 대형 3배 레버리지 자산에 초집중 투자하여 최고 수준의 수익 효율을 추구합니다.
@@ -809,13 +926,14 @@ else:
               - **공격 신호**: 3개 공격 레버리지 후보(TYD, UPRO, VNQ) 중 **가중평균 모멘텀 스코어**가 가장 높은 단 1개 자산에 **$100\%$ 몰빵 집중 투자**합니다.
               - **방어 신호**: 3개 인버스/방어 후보(DOG, RWM, TBF) 중 **5개월 단순 수익률**이 가장 높은 자산에 **$100\%$ 투자**합니다. 단, 해당 자산의 자체 단순평균 모멘텀 스코어가 음수면 **현금($100\%$)**으로 피신합니다.
             
-            ### 📈 실제 백테스트 지표 (전략b.jpg 데이터 반영)
+            ### 📈 실제 백테스트 지표 (전략b.jpg 실측 데이터 반영)
             """)
-            col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+            col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns(5)
             col_b1.metric("연환산 수익률 (CAGR)", "36.4%")
             col_b2.metric("최대 낙폭 (MDD)", "-27.8%")
             col_b3.metric("샤프 지수 (Sharpe)", "1.35")
-            col_b4.metric("소티노 지수 / 변동성", "2.44 / 25.9%")
+            col_b4.metric("소티노 지수 (Sortino)", "2.44")
+            col_b5.metric("연 변동성 (Volatility)", "25.9%")
             
             st.markdown("""
             ### 📝 모멘텀 가중평균 공식
@@ -873,13 +991,12 @@ else:
                     s = data_dict.get(t, {}).get("B_단순모멘텀", 0.0)
                     st.info(f"🏆 **{t}** : 비중 **100%** (현재가: ${p:.2f}, 자체 모멘텀: {s:.2f}%)")
 
-
     # ==================== TAB 4: 전략 C (c_c 컨테이너에 매핑) ====================
     with c_c:
         st.header("🔄 전략 C (섹터로테이션)")
         
         # 전략C 가이드라인 추가
-        with st.expander("📖 전략 C 상세 운용원칙 및 기대성과"):
+        with st.expander("📖 전략 C 상세 운용원칙 및 기대성과 (섹터로테이션_전략_운용원칙_분석.pdf)"):
             st.markdown("""
             ### 🔄 섹터 로테이션 전략 핵심 운용원칙
             S&P 500 기업들의 전체 가치 척도인 **실시간 배당수익률(Dividend Yield)**을 기반으로 주식 저평가/과열 국면을 완벽히 모니터링하여 가치 전환적 투자를 실행합니다.
@@ -891,13 +1008,14 @@ else:
               - **공격 신호 발생 시**: 4대 주도 인터넷/배터리/반도체/에너지 섹터(FDN, LIT, SMH, XLE) 중 **1-3-6-12M 단순 평균 모멘텀 스코어**가 가장 우수한 단 1개 섹터 자산에 **$100\%$ 집중 투자**합니다.
               - **방어 신호 발생 시**: 원자재 방어 자산군(GLD, PDBC, OILK) 중 단순평균 모멘텀 스코어가 가장 높은 1개 자산에 **$100\%$ 대피**하되, 모멘텀이 모두 마이너스이면 안전하게 **현금($100\%$)**을 확보합니다.
             
-            ### 📈 실제 백테스트 지표 (전략c.jpg 데이터 반영)
+            ### 📈 실제 백테스트 지표 (전략c.jpg 실측 데이터 반영)
             """)
-            col_c1, col_c2, col_c3, col_c4 = st.columns(4)
+            col_c1, col_c2, col_c3, col_c4, col_c5 = st.columns(5)
             col_c1.metric("연환산 수익률 (CAGR)", "46.7%")
             col_c2.metric("최대 낙폭 (MDD)", "-19.9%")
             col_c3.metric("샤프 지수 (Sharpe)", "1.59")
-            col_c4.metric("소티노 지수 / 변동성", "2.63 / 27.8%")
+            col_c4.metric("소티노 지수 (Sortino)", "2.63")
+            col_c5.metric("연 변동성 (Volatility)", "27.8%")
 
             st.markdown("""
             ### 🎯 전략적 장점
@@ -1019,3 +1137,10 @@ else:
                         st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
                     else:
                         st.write("⚠️ 해당 기간 데이터 부족")
+```
+eof
+
+### 🔄 업데이트 내용 요약:
+1. **글로벌 실시간 매크로 시황판 구축**: 타이틀 바로 아래에 배치되어 페이지 로딩 시 즉각 확인 가능합니다. 변동성 있는 가격 데이터는 대한민국 표준 주식 색상(상승은 빨간색, 하락은 파란색)을 따르는 CSS 스타일로 입혀져 가시성이 매우 뛰어납니다.
+2. **외환 및 채권 금리, 원자재 정교화**: 미국 10년물 국채 금리, VIX 지수, WTI 원유, 달러화 가치와 엔화, 위안화 및 원화 환율을 실시간으로 가져와 동기화합니다.
+3. **가볍고 빠른 캐시 관리**: 시황 정보는 사용자 브라우저를 보호하고 로딩 속도를 향상하기 위해 5분(`ttl=300`) 캐싱을 적용해 부드러운 화면 전환이 가능합니다.
