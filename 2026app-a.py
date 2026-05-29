@@ -134,6 +134,7 @@ MACRO_TICKERS = {
     "S&P 500 VIX": "^VIX",
     "US 500 (S&P)": "^GSPC",
     "US Tech 100 (나스닥)": "^NDX",
+    "S&P 500": "SPY",
     "인베스코QQQ": "QQQ",
     "코스피 200": "^KS200"
 }
