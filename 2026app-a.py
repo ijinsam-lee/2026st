@@ -554,14 +554,14 @@ else:
     realtime_dy = get_sp500_dividend_yield()
     is_attack_c = realtime_dy > 1.33
     
-    # ------------------ 메인 탭 선언 (6번째 탭 '복리 계산기' 완벽 추가) ------------------
+    # ------------------ 메인 탭 선언 (6번째 탭 '자산 계산기' 완벽 추가) ------------------
     tab_2026, tab_a, tab_b, tab_c, tab_rank, tab_calc = st.tabs([
         "🏆 2026 혼합전략", 
         "🛡️ 전략 A", 
         "⚡ 전략 B", 
         "🔄 전략 C",
         "🇺🇸 미국 ETF 랭킹",
-        "🧮 복리 계산기"
+        "🧮 자산 계산기"
     ])
 
     # 탭별 독립 렌더링을 위한 컨테이너 할당
@@ -1155,7 +1155,7 @@ else:
         df_top5 = df_ranking.head(5).copy()
         
         try:
-            import altair as alt
+            import altair as alt  # <- 'import alt' 오타 오류 수정 완료!
             top_chart = alt.Chart(df_top5).mark_bar(cornerRadiusEnd=6).encode(
                 x=alt.X(f"{selected_sort_col}:Q", title=sort_by),
                 y=alt.Y("티커 (Ticker):N", sort='-x', title="ETF 티커"),
@@ -1171,12 +1171,12 @@ else:
         st.dataframe(df_ranking, use_container_width=True)
 
 
-    # ==================== TAB 6: 복리 계산기 (c_calc 컨테이너에 매핑) ====================
+    # ==================== TAB 6: 자산 계산기 (c_calc 컨테이너에 매핑) ====================
     with c_calc:
-        st.header("🧮 복리의 마법 & 낙원 계산기")
+        st.header("🧮 복리의 마법 & 미래 계산기")
         st.markdown(
-            "자산배분 백테스트의 실제 연평균 수익률(CAGR)을 기반으로, 매월 적립식 저축이 유발하는 "
-            "미래 자산 성장 경로를 정밀하게 예측합니다. **세율 적용** 및 **물가상승률 할인**까지 연산하는 실전형 복리 계산기입니다."
+            "자산배분 백테스트의 실제 연평균 수익률(CAGR)을 기반으로, 매월 적립식 저축 및 정기 생활비 지출이 유발하는 "
+            "미래 자산의 실제 성장 경로를 정밀하게 예측합니다. **세율 적용**, **생활비 지출 설정**, 및 **물가상승률 할인**까지 연산하는 실전형 자산 시뮬레이터입니다."
         )
 
         # 복리 연산용 세션스테이트 목표 수익률 동기화 초기화
@@ -1205,10 +1205,12 @@ else:
         with col_inp1:
             calc_init = st.number_input("초기 투자금 (만원 ₩)", min_value=0, value=2000, step=100)
             calc_monthly = st.number_input("매월 저축/적립금 (만원 ₩)", min_value=0, value=100, step=10)
+            calc_expense = st.number_input("매월 지출/생활비 (만원 ₩)", min_value=0, value=0, step=10, help="투자수익에서 정기 지출하는 생활비가 있다면 마이너스로 처리됩니다.")
             calc_years = st.slider("시뮬레이션 투자 기간 (년)", min_value=1, max_value=40, value=15)
         with col_inp2:
             calc_cagr = st.number_input("연 목표 수익률 CAGR (%)", min_value=0.0, max_value=100.0, key="cagr_input", step=0.1)
             calc_inflation = st.number_input("연 예상 물가상승률 (%)", min_value=0.0, max_value=20.0, value=3.0, step=0.1)
+            calc_expense_start = st.number_input("지출 시작 시점 (년차)", min_value=1, max_value=max(1, calc_years), value=1, step=1, help="생활비 지출을 몇 년차부터 적용할지 연차를 지정합니다.")
             calc_tax_opt = st.selectbox("세율 설정", ["일반과세 (15.4%)", "미국주식양도세 (22.0%)", "비과세 계좌 (0.0% / ISA 및 연금저축)", "사용자 정의"])
             
             if calc_tax_opt == "일반과세 (15.4%)":
@@ -1220,21 +1222,31 @@ else:
             else:
                 tax_rate = st.number_input("세율 직접 입력 (%)", min_value=0.0, max_value=50.0, value=15.4, step=0.1)
 
-        # 복리 연산 로직 (월 복리 정밀 시뮬레이션 및 세금, 물가 역산)
+        # 복리 연산 로직 (월 복리 정밀 시뮬레이션 및 생활비 인플레이션 차감, 세금, 물가 역산)
         records = []
         curr_nominal = calc_init * 10000
         curr_contribution = calc_init * 10000
         monthly_contrib = calc_monthly * 10000
+        base_expense = calc_expense * 10000
         r_monthly = (1 + calc_cagr / 100) ** (1/12) - 1 if calc_cagr > 0 else 0.0
 
         for y in range(1, calc_years + 1):
-            # 12개월간 매월 적립 및 복리 연산 수행
+            # 매년 생활비는 연간 누적 물가상승률만큼 증가하여 적용
+            current_year_monthly_expense = base_expense * ((1 + calc_inflation / 100) ** (y - 1)) if y >= calc_expense_start else 0.0
+            
+            # 12개월간 매월 적립/지출 및 복리 연산 수행
             for m in range(12):
-                curr_contribution += monthly_contrib
-                curr_nominal = (curr_nominal + monthly_contrib) * (1 + r_monthly)
+                net_flow = monthly_contrib - current_year_monthly_expense
+                curr_contribution += net_flow
+                curr_nominal = (curr_nominal + net_flow) * (1 + r_monthly)
+                
+                # 자산 평가액은 0원 미만으로 내려가지 않음
+                if curr_nominal < 0:
+                    curr_nominal = 0.0
             
             # 누적 평가금에서 발생한 세전 투자 수익금 정산
-            profit = curr_nominal - curr_contribution
+            effective_contribution = max(0.0, curr_contribution)
+            profit = curr_nominal - effective_contribution
             tax_due = profit * (tax_rate / 100) if profit > 0 else 0.0
             curr_after_tax = curr_nominal - tax_due
             
@@ -1251,30 +1263,32 @@ else:
 
         df_calc = pd.DataFrame(records)
 
-        # 한국인이 보기에 아주 우아하고 아름다운 억/만원 화폐 표기식 헬퍼 함수
+        # 한국인이 보기에 아주 우아하고 아름다운 억/만원 화폐 표기식 헬퍼 함수 (음수 지원 기능 추가)
         def format_krw(val):
-            if val <= 0:
+            sign = "-" if val < 0 else ""
+            val = abs(val)
+            if val == 0:
                 return "0원"
             if val >= 100000000:
                 eok = int(val // 100000000)
                 man = int((val % 100000000) // 10000)
                 if man > 0:
-                    return f"{eok}억 {man:,}만원"
-                return f"{eok}억원"
+                    return f"{sign}{eok}억 {man:,}만원"
+                return f"{sign}{eok}억원"
             else:
                 man = int(val // 10000)
-                return f"{man:,}만원"
+                return f"{sign}{man:,}만원"
 
         # 최종 목표 요약 패널 구성
         last_rec = records[-1]
         st.markdown("### 🏆 시뮬레이션 최종 기대 성과 요약")
         sum_col1, sum_col2, sum_col3 = st.columns(3)
-        sum_col1.metric("총 납입원금", format_krw(last_rec["누적 납입원금"]))
-        sum_col2.metric("세후 수령액", format_krw(last_rec["세후 수령예정액"]))
+        sum_col1.metric("총 순 원금(저축-지출)", format_krw(last_rec["누적 납입원금"]))
+        sum_col2.metric("세후 최종 자산", format_krw(last_rec["세후 수령예정액"]))
         sum_col3.metric("실질구매력 가치", format_krw(last_rec["세후 실질가치 (물가반영)"]))
 
         # 복리 효과 시각화 라인 차트 (Altair 활용)
-        st.markdown("### 📈 복리 효과 가시화 차트")
+        st.markdown("### 📈 미래 자산 성장 시뮬레이션")
         df_melt = df_calc.melt(id_vars="년차", value_vars=["누적 납입원금", "세전 일반복리", "세후 수령예정액", "세후 실질가치 (물가반영)"], var_name="구분", value_name="자산액")
         
         try:
