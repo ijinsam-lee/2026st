@@ -8,100 +8,100 @@ st.set_page_config(page_title="동적 자산배분 대시보드", layout="center
 
 # 프리미엄 그레이/슬레이트 톤 스타일 및 탭 선택바 강조 스타일 주입
 st.markdown("""
-    <style>
-    /* 글로벌 배경화면 및 메인 톤 조정 */
-    .stApp {
-        background-color: #f8fafc;
-    }
-    
-    /* 상단 탭 메뉴(전략 선택 영역)를 프리미엄 그레이 세그먼트 컨트롤러로 강조 */
-    .stTabs [data-baseweb="tab-list"] {
-        background-color: #e2e8f0 !important; /* 차분하고 정돈된 미디엄 그레이 배경 */
-        border: 1px solid #cbd5e1 !important;
-        border-radius: 12px !important;
-        padding: 5px !important;
-        gap: 4px !important;
-        box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.06), 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important;
-        margin-bottom: 20px !important;
-    }
-    
-    /* 탭 내부 개별 버튼들을 하나의 모던한 세그먼트로 구성 */
-    .stTabs [data-baseweb="tab"] {
-        background-color: transparent !important;
-        border-radius: 8px !important;
-        padding: 10px 12px !important;
-        font-weight: 800 !important;
-        font-size: 0.85rem !important;
-        color: #475569 !important; /* 세련된 다크그레이 글자색 */
-        border: none !important;
-        transition: all 0.2s ease-in-out !important;
-        flex: 1 !important; /* 모바일 화면에서 동일 가로비율 배분 */
-        text-align: center !important;
-    }
-    
-    /* [선택된 탭 강조] 딥 슬레이트 그레이 컬러로 압도적인 선택 상태 시인성 제공 */
-    .stTabs [aria-selected="true"] {
-        background-color: #1e293b !important; /* 다크 슬레이트 그레이 */
-        color: #ffffff !important; /* 선명한 화이트 텍스트 */
-        box-shadow: 0 4px 10px -2px rgba(30, 41, 59, 0.3) !important;
-    }
-    
-    /* 시뮬레이션 설정 상자도 품격 있는 뉴트럴 그레이 톤 플레이트로 교체 */
-    .control-panel {
-        background-color: #f1f5f9 !important; /* 부드러운 라이트 그레이 */
-        border: 1px solid #cbd5e1 !important;
-        border-radius: 12px !important;
-        padding: 18px !important;
-        margin-bottom: 20px !important;
-    }
-    .control-header {
-        color: #0f172a !important; /* 차분한 블랙 계열 */
-        font-weight: 800 !important;
-        font-size: 0.98rem !important;
-        margin-bottom: 4px !important;
-    }
-    .control-subheader {
-        color: #475569 !important; /* 짙은 회색 */
-        font-size: 0.8rem !important;
-        line-height: 1.45 !important;
-    }
-    
-    /* 매크로 시황판 카드 스타일 */
-    .macro-card {
-        background-color: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        padding: 10px 12px;
-        margin-bottom: 8px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.02);
-    }
-    .macro-title {
-        font-size: 0.78rem;
-        color: #64748b;
-        font-weight: 600;
-        margin-bottom: 2px;
-    }
-    .macro-value {
-        font-size: 1.05rem;
-        font-weight: 700;
-        color: #0f172a;
-    }
-    .macro-delta-up {
-        font-size: 0.75rem;
-        color: #dc2626;
-        font-weight: 600;
-    }
-    .macro-delta-down {
-        font-size: 0.75rem;
-        color: #2563eb;
-        font-weight: 600;
-    }
-    .macro-delta-equal {
-        font-size: 0.75rem;
-        color: #64748b;
-        font-weight: 600;
-    }
-    </style>
+<style>
+/* 글로벌 배경화면 및 메인 톤 조정 */
+.stApp {
+    background-color: #f8fafc;
+}
+
+/* 상단 탭 메뉴(전략 선택 영역)를 프리미엄 그레이 세그먼트 컨트롤러로 강조 */
+.stTabs [data-baseweb="tab-list"] {
+    background-color: #e2e8f0 !important; /* 차분하고 정돈된 미디엄 그레이 배경 */
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 12px !important;
+    padding: 5px !important;
+    gap: 4px !important;
+    box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.06), 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important;
+    margin-bottom: 20px !important;
+}
+
+/* 탭 내부 개별 버튼들을 하나의 모던한 세그먼트로 구성 */
+.stTabs [data-baseweb="tab"] {
+    background-color: transparent !important;
+    border-radius: 8px !important;
+    padding: 10px 12px !important;
+    font-weight: 800 !important;
+    font-size: 0.85rem !important;
+    color: #475569 !important; /* 세련된 다크그레이 글자색 */
+    border: none !important;
+    transition: all 0.2s ease-in-out !important;
+    flex: 1 !important; /* 모바일 화면에서 동일 가로비율 배분 */
+    text-align: center !important;
+}
+
+/* [선택된 탭 강조] 딥 슬레이트 그레이 컬러로 압도적인 선택 상태 시인성 제공 */
+.stTabs [aria-selected="true"] {
+    background-color: #1e293b !important; /* 다크 슬레이트 그레이 */
+    color: #ffffff !important; /* 선명한 화이트 텍스트 */
+    box-shadow: 0 4px 10px -2px rgba(30, 41, 59, 0.3) !important;
+}
+
+/* 시뮬레이션 설정 상자도 품격 있는 뉴트럴 그레이 톤 플레이트로 교체 */
+.control-panel {
+    background-color: #f1f5f9 !important; /* 부드러운 라이트 그레이 */
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 12px !important;
+    padding: 18px !important;
+    margin-bottom: 20px !important;
+}
+.control-header {
+    color: #0f172a !important; /* 차분한 블랙 계열 */
+    font-weight: 800 !important;
+    font-size: 0.98rem !important;
+    margin-bottom: 4px !important;
+}
+.control-subheader {
+    color: #475569 !important; /* 짙은 회색 */
+    font-size: 0.8rem !important;
+    line-height: 1.45 !important;
+}
+
+/* 매크로 시황판 카드 스타일 */
+.macro-card {
+    background-color: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+}
+.macro-title {
+    font-size: 0.78rem;
+    color: #64748b;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+.macro-value {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #0f172a;
+}
+.macro-delta-up {
+    font-size: 0.75rem;
+    color: #dc2626;
+    font-weight: 600;
+}
+.macro-delta-down {
+    font-size: 0.75rem;
+    color: #2563eb;
+    font-weight: 600;
+}
+.macro-delta-equal {
+    font-size: 0.75rem;
+    color: #64748b;
+    font-weight: 600;
+}
+</style>
 """, unsafe_allow_html=True)
 
 st.title("📈 동적 자산배분 대시보드")
@@ -117,8 +117,8 @@ OFFENSIVE_B = ["TYD", "UPRO", "VNQ"]
 DEFENSIVE_B = ["DOG", "RWM", "TBF"]
 
 # 전략C (섹터로테이션) 자산군
-OFFENSIVE_C = ["FDN", "LIT", "SMH", "XLE"]  # 4대 주도 섹터
-DEFENSIVE_C = ["GLD", "PDBC", "OILK"]       # 3대 원자재 방어자산
+OFFENSIVE_C = ["FDN", "LIT", "SMH", "XLE"] # 4대 주도 섹터
+DEFENSIVE_C = ["GLD", "PDBC", "OILK"] # 3대 원자재 방어자산
 
 # 중복 없는 전체 티커 추출 (미국 ETF 랭킹 비교용 인기 자산군 SCHD, JEPI, TQQQ, SOXL, DIA, IWM, XLF 추가)
 ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C + ["SCHD", "QQQM", "IGV", "XLU", "JEPI", "TQQQ", "SOXL", "DIA", "IWM", "XLF"]))
@@ -139,7 +139,7 @@ MACRO_TICKERS = {
     "코스피 200": "^KS200"
 }
 
-@st.cache_data(ttl=300)  # 시황 데이터는 5분 단위 캐싱
+@st.cache_data(ttl=300) # 시황 데이터는 5분 단위 캐싱
 def get_macro_market_pulse():
     macro_data = []
     for name, symbol in MACRO_TICKERS.items():
@@ -178,7 +178,7 @@ def get_macro_market_pulse():
         except Exception:
             # 개별 지표 에러 발생 시에도 시황판 전체 크래시를 차단하고 기본값을 적용해 렌더링 유지
             pass
-            
+        
         macro_data.append({
             "name": name,
             "symbol": symbol,
@@ -204,13 +204,13 @@ with st.expander("🌍 실시간 글로벌 매크로 시황판 (내 관심목록
             delta_class = "macro-delta-up"
         elif item["raw_delta"] < 0:
             delta_class = "macro-delta-down"
-            
+        
         col_to_use.markdown(f"""
-            <div class="macro-card">
-                <div class="macro-title">{item['name']} <small style='color:#94a3b8; font-size:0.65rem;'>{item['symbol']}</small></div>
-                <div class="macro-value">{item['price']}</div>
-                <div class="{delta_class}">{item['delta']} ({item['delta_pct']})</div>
-            </div>
+        <div class="macro-card">
+            <div class="macro-title">{item['name']} <small style='color:#94a3b8; font-size:0.65rem;'>{item['symbol']}</small></div>
+            <div class="macro-value">{item['price']}</div>
+            <div class="{delta_class}">{item['delta']} ({item['delta_pct']})</div>
+        </div>
         """, unsafe_allow_html=True)
 
 # 실시간 원/달러 환율 구하는 헬퍼 함수
@@ -225,7 +225,7 @@ def get_usd_krw_rate():
                 return float(closes.iloc[-1])
     except Exception:
         pass
-    return 1380.0  # 기본 백업 환율
+    return 1380.0 # 기본 백업 환율
 
 # S&P 500 배당수익률 구하는 헬퍼 함수
 def get_sp500_dividend_yield():
@@ -254,10 +254,10 @@ def get_sp500_dividend_yield():
                     return (sum_divs / curr_price) * 100
     except Exception as e:
         pass
-    return 1.32  # 기본값 백업
+    return 1.32 # 기본값 백업
 
 # 과거 캐시 강제 무효화를 위한 고유 버전 함수 유지
-@st.cache_data(ttl=3600)  
+@st.cache_data(ttl=3600) 
 def get_all_financial_data_v2(tickers):
     data_list = []
     now = datetime.datetime.now()
@@ -299,7 +299,7 @@ def get_all_financial_data_v2(tickers):
             
             # 전략 B용 스코어 계산 (가중평균 및 단순평균)
             score_b_off = (r1 * 12 + r3 * 4 + r6 * 2 + r12 * 1) / 19
-            score_b_def_simple = (r1 + r3 + r6 + r9 + r12) / 5  # 전략B 방어자산 단순 모멘텀
+            score_b_def_simple = (r1 + r3 + r6 + r9 + r12) / 5 # 전략B 방어자산 단순 모멘텀
             
             data_list.append({
                 "Ticker": ticker,
@@ -318,7 +318,7 @@ def get_all_financial_data_v2(tickers):
             })
         except Exception as e:
             st.error(f"{ticker} 데이터를 가져오는 중 오류 발생: {e}")
-            
+    
     return pd.DataFrame(data_list)
 
 # --- 2년 이상의 데이터 수집을 통해 지난 12개월(최근 1년) 월말 포트폴리오를 시뮬레이션하기 위한 함수 ---
@@ -336,13 +336,13 @@ def get_historical_simulation_data(tickers):
                 prices_dict[ticker] = hist['Close']
         except Exception:
             pass
-            
+    
     spy_divs = pd.Series(dtype=float)
     try:
         spy_divs = yf.Ticker("SPY").dividends
     except Exception:
         pass
-        
+    
     return prices_dict, spy_divs
 
 # 특정 월말 기준의 리밸런싱 포트폴리오를 연산하는 백테스트 엔진
@@ -476,7 +476,7 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
         spy_divs_naive = spy_divs.copy()
         if spy_divs_naive.index.tz is not None:
             spy_divs_naive.index = spy_divs_naive.index.tz_localize(None)
-            
+        
         divs_in_range = spy_divs_naive.loc[start_dt:target_date_naive]
         sum_divs = divs_in_range.sum()
         
@@ -484,7 +484,7 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
         if spy_price:
             dy_calc = (sum_divs / spy_price) * 100
             dy_val = dy_calc * 100 if dy_calc < 0.15 else dy_calc
-            
+        
     is_attack_c_hist = dy_val > 1.33
 
     alloc_c_hist = {}
@@ -740,14 +740,14 @@ else:
                 
                 # 프리미엄 다채롭고 직관적인 고대비 컬러 스케일 정의 (시각적 구분 및 차트 밸런스 극대화)
                 premium_colors = [
-                    "#3b82f6",  # 신뢰감을 주는 블루
-                    "#ef4444",  # 시선을 끄는 부드러운 레드
-                    "#10b981",  # 안정적인 에메랄드 그린
-                    "#f59e0b",  # 화사한 오렌지/옐로우
-                    "#8b5cf6",  # 고급스러운 바이올렛 퍼플
-                    "#ec4899",  # 트렌디한 딥 핑크
-                    "#06b6d4",  # 시원한 시안
-                    "#f97316"   # 감각적인 귤색
+                    "#3b82f6", # 신뢰감을 주는 블루
+                    "#ef4444", # 시선을 끄는 부드러운 레드
+                    "#10b981", # 안정적인 에메랄드 그린
+                    "#f59e0b", # 화사한 오렌지/옐로우
+                    "#8b5cf6", # 고급스러운 바이올렛 퍼플
+                    "#ec4899", # 트렌디한 딥 핑크
+                    "#06b6d4", # 시원한 시안
+                    "#f97316" # 감각적인 귤색
                 ]
                 
                 color_scale = alt.Scale(
@@ -795,7 +795,7 @@ else:
                 # 안전한 대체 백업 차트 렌더링
                 st.info("시각화 뷰 로드 완료")
                 st.bar_chart(df_mix.set_index("자산군 (Ticker)")["배분 비중 (%)"])
-                
+        
         with table_col:
             st.dataframe(df_mix, use_container_width=True, hide_index=True)
 
@@ -847,8 +847,68 @@ else:
                     "현재가": current_price_str,
                     "목표 매수량": target_shares
                 })
-                
+            
             st.dataframe(pd.DataFrame(calc_data), use_container_width=True, hide_index=True)
+
+        # ==================== 대시보드 공통 하단에서 이동: 지난 12개월(최근 1년)간의 월말 기준 리밸런싱 역사 백테스트 ====================
+        # (2026 혼합전략 탭에서만 보이게 하기 위해 c_2026 컨테이너 최하단 영역으로 이전 완료)
+        with st.spinner("지난 12개월(최근 1년) 월말 포트폴리오 데이터를 로딩 및 역동 연산 중..."):
+            hist_prices, spy_divs_hist = get_historical_simulation_data(ALL_TICKERS)
+            
+        if hist_prices and "SPY" in hist_prices:
+            st.markdown("---")
+            st.markdown("### 📅 월말 기준 리밸런싱 포트폴리오 역사 (최근 1년)")
+            st.caption("매월 최종 영업일 마감 데이터를 기준으로 실시간 모멘텀과 시그널을 연산하여, 익월 1일 아침 리밸런싱 시 적용되는 혼합 포트폴리오 구성 비중입니다.")
+            
+            spy_series = hist_prices["SPY"]
+            df_spy_dates = spy_series.to_frame()
+            df_spy_dates['year'] = df_spy_dates.index.year
+            df_spy_dates['month'] = df_spy_dates.index.month
+            
+            # 년-월별 가장 마지막 영업일의 날짜 추출
+            month_ends = df_spy_dates.groupby(['year', 'month']).apply(lambda x: x.index[-1]).tolist()
+            
+            # 진행 중인 미완료 상태의 이번 달을 제외하고, 완료된 지난 12개월 수집
+            now = datetime.datetime.now()
+            completed_month_ends = [d for d in month_ends if not (d.year == now.year and d.month == now.month)]
+            completed_12_months = completed_month_ends[-12:]
+            completed_12_months.reverse() # 최신순 정렬 (최근 월이 먼저 보이도록)
+            
+            # 2열 그리드 배치로 공간 극대화 및 깔끔한 출력 유지
+            col_h1, col_h2 = st.columns(2)
+            for idx, date in enumerate(completed_12_months):
+                target_col = col_h1 if idx % 2 == 0 else col_h2
+                
+                # 해당 월말 시점의 최종 포트폴리오 및 시그널 역동 연산
+                hist_portfolio, sig_a, sig_b, sig_c, dy_c = compute_historical_portfolio_at_month_end(
+                    hist_prices, spy_divs_hist, date,
+                    OFFENSIVE_A, DEFENSIVE_A, OFFENSIVE_B, DEFENSIVE_B, OFFENSIVE_C, DEFENSIVE_C
+                )
+                
+                date_str = date.strftime("%Y년 %m월 %d일")
+                sig_text_a = "🟢 공격" if sig_a else "🛡️ 방어"
+                sig_text_b = "🟢 공격" if sig_b else "🛡️ 방어"
+                sig_text_c = "🟢 공격" if sig_c else "🛡️ 방어"
+                
+                with target_col:
+                    with st.expander(f"📅 {date_str} 마감 기준 포트폴리오"):
+                        sm1, sm2, sm3 = st.columns(3)
+                        with sm1:
+                            st.caption("전략A 신호")
+                            st.markdown(f"**{sig_text_a}**")
+                        with sm2:
+                            st.caption("전략B 신호")
+                            st.markdown(f"**{sig_text_b}**")
+                        with sm3:
+                            st.caption("전략C 신호")
+                            st.markdown(f"**{sig_text_c}**<br/><small>({dy_c:.2f}%)</small>", unsafe_allow_html=True)
+                        
+                        st.markdown("**포트폴리오 비중:**")
+                        hist_rows = [{"자산명(Ticker)": k, "배분비중 (%)": f"{v:.2f}%"} for k, v in hist_portfolio.items()]
+                        if hist_rows:
+                            st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
+                        else:
+                            st.write("⚠️ 해당 기간 데이터 부족")
 
 
     # ==================== TAB 2: 전략 A (c_a 컨테이너에 매핑) ====================
@@ -863,8 +923,8 @@ else:
             
             * **1단계 (카나리아 국면 판독)**: TIP 현재 가격이 11개월 이동평균선($TIP_{11MA}$) 위에 존재하면 **공격 국면**, 선 아래에 위치하면 **방어 국면**으로 전환합니다.
             * **2단계 (공격/방어 자산 매수)**:
-              - **공격 국면 (공격 자산 13개)**: 모멘텀 스코어가 가장 높은 상위 4개 종목에 각 **$25\%$씩 균등 배분**합니다.
-              - **방어 국면 (방어 자산 4개)**: 모멘텀 스코어 상위 1개 자산에 **$100\%$ 집중 투자**하되, 해당 자산의 모멘텀 스코어마저 음수($< 0$)인 극단적 상황 시 **현금($100\%$)으로 전액 대피**합니다.
+                - **공격 국면 (공격 자산 13개)**: 모멘텀 스코어가 가장 높은 상위 4개 종목에 각 **$25\%$씩 균등 배분**합니다.
+                - **방어 국면 (방어 자산 4개)**: 모멘텀 스코어 상위 1개 자산에 **$100\%$ 집중 투자**하되, 해당 자산의 모멘텀 스코어마저 음수($< 0$)인 극단적 상황 시 **현금($100\%$)으로 전액 대피**합니다.
             
             ### 📈 실제 백테스트 지표 (전략a.jpg 실측 데이터 반영)
             """)
@@ -878,7 +938,7 @@ else:
             st.markdown("""
             ### 📝 모멘텀 계산 공식
             * **공격/방어 자산 모멘텀 스코어**: 1개월, 3개월, 6개월, 12개월 수익률의 단순 평균값입니다.
-              $$\\text{Momentum Score} = \\frac{R_1 + R_3 + R_6 + R_{12}}{4}$$
+            $$\\text{Momentum Score} = \\frac{R_1 + R_3 + R_6 + R_{12}}{4}$$
             * **방어 자산 전환 필터**: 방어 자산은 1-3-6-9-12개월 단순 평균 모멘텀 스코어가 최종 $0$ 이상인 조건이어야 매입이 진행됩니다.
             """)
 
@@ -944,11 +1004,11 @@ else:
             전략B는 채권 실질금리 모멘텀의 급격한 변화를 바탕으로 대형 3배 레버리지 자산에 초집중 투자하여 최고 수준의 수익 효율을 추구합니다.
             
             * **1단계 (카나리아 모멘텀 계산)**: TIP의 1-3-6-9-12개월 단순평균 모멘텀 스코어를 구합니다.
-              - 스코어 **양수(+)** $\\rightarrow$ **공격 신호** 발생
-              - 스코어 **음수(-)/영(0)** $\\rightarrow$ **방어 신호** 발생
+                - 스코어 **양수(+)** $\\rightarrow$ **공격 신호** 발생
+                - 스코어 **음수(-)/영(0)** $\\rightarrow$ **방어 신호** 발생
             * **2단계 (자산 선택)**:
-              - **공격 신호**: 3개 공격 레버리지 후보(TYD, UPRO, VNQ) 중 **가중평균 모멘텀 스코어**가 가장 높은 단 1개 자산에 **$100\%$ 몰빵 집중 투자**합니다.
-              - **방어 신호**: 3개 인버스/방어 후보(DOG, RWM, TBF) 중 **5개월 단순 수익률**이 가장 높은 자산에 **$100\%$ 투자**합니다. 단, 해당 자산의 자체 단순평균 모멘텀 스코어가 음수면 **현금($100\%$)**으로 피신합니다.
+                - **공격 신호**: 3개 공격 레버리지 후보(TYD, UPRO, VNQ) 중 **가중평균 모멘텀 스코어**가 가장 높은 단 1개 자산에 **$100\%$ 몰빵 집중 투자**합니다.
+                - **방어 신호**: 3개 인버스/방어 후보(DOG, RWM, TBF) 중 **5개월 단순 수익률**이 가장 높은 자산에 **$100\%$ 투자**합니다. 단, 해당 자산의 자체 단순평균 모멘텀 스코어가 음수면 **현금($100\%$)**으로 피신합니다.
             
             ### 📈 실제 백테스트 지표 (전략b.jpg 실측 데이터 반영)
             """)
@@ -962,7 +1022,7 @@ else:
             st.markdown("""
             ### 📝 모멘텀 가중평균 공식
             * 공격 자산 결정 시 최근 트렌드에 극도로 민감하도록 **최근 수익률에 최대 가중치**를 부여하여 계산합니다.
-              $$\\text{Weighted Momentum} = \\frac{12 \\cdot R_1 + 4 \\cdot R_3 + 2 \\cdot R_6 + 1 \\cdot R_{12}}{19}$$
+            $$\\text{Weighted Momentum} = \\frac{12 \\cdot R_1 + 4 \\cdot R_3 + 2 \\cdot R_6 + 1 \\cdot R_{12}}{19}$$
             """)
 
         st.markdown(
@@ -1027,11 +1087,11 @@ else:
             S&P 500 기업들의 전체 가치 척도인 **실시간 배당수익률(Dividend Yield)**을 기반으로 주식 저평가/과열 국면을 완벽히 모니터링하여 가치 전환적 투자를 실행합니다.
             
             * **1단계 (배당수익률 필터링)**: 
-              - S&P 500 배당수익률 **$1.33\%$ 초과** $\\rightarrow$ **공격 신호** (시장이 저평가되어 주식의 매력도가 매우 높은 국면)
-              - S&P 500 배당수익률 **$1.33\%$ 이하** $\\rightarrow$ **방어 신호** (시장이 과열되어 배당 가치가 바닥으로 처진 리스크 관리 국면)
+                - S&P 500 배당수익률 **$1.33\%$ 초과** $\\rightarrow$ **공격 신호** (시장이 저평가되어 주식의 매력도가 매우 높은 국면)
+                - S&P 500 배당수익률 **$1.33\%$ 이하** $\\rightarrow$ **방어 신호** (시장이 과열되어 배당 가치가 바닥으로 처진 리스크 관리 국면)
             * **2단계 (자산 매수 가이드)**:
-              - **공격 신호 발생 시**: 4대 주도 인터넷/배터리/반도체/에너지 섹터(FDN, LIT, SMH, XLE) 중 **1-3-6-12M 단순 평균 모멘텀 스코어**가 가장 우수한 단 1개 섹터 자산에 **$100\%$ 집중 투자**합니다.
-              - **방어 신호 발생 시**: 원자재 방어 자산군(GLD, PDBC, OILK) 중 단순평균 모멘텀 스코어가 가장 높은 1개 자산에 **$100\%$ 대피**하되, 모멘텀이 모두 마이너스이면 안전하게 **현금($100\%$)**을 확보합니다.
+                - **공격 신호 발생 시**: 4대 주도 인터넷/배터리/반도체/에너지 섹터(FDN, LIT, SMH, XLE) 중 **1-3-6-12M 단순 평균 모멘텀 스코어**가 가장 우수한 단 1개 섹터 자산에 **$100\%$ 집중 투자**합니다.
+                - **방어 신호 발생 시**: 원자재 방어 자산군(GLD, PDBC, OILK) 중 단순평균 모멘텀 스코어가 가장 높은 1개 자산에 **$100\%$ 대피**하되, 모멘텀이 모두 마이너스이면 안전하게 **현금($100\%$)**을 확보합니다.
             
             ### 📈 실제 백테스트 지표 (전략c.jpg 실측 데이터 반영)
             """)
@@ -1054,14 +1114,14 @@ else:
         
         # S&P 500 실시간 배당률 계산 현황 안내 패널 (수동 조절 위젯 완벽 제거)
         st.markdown(f"""
-            <div class="control-panel">
-                <div class="control-header">📊 S&P 500 (SPY) 실시간 배당수익률 모니터링</div>
-                <div class="control-subheader">
-                    야후 파이낸스(yfinance) API로부터 소수 및 백분율 단위를 실시간으로 정합 보정하여 산출한 데이터입니다.<br/>
-                    • <b>실시간 배당수익률: {realtime_dy:.2f}%</b><br/>
-                    • <b>모드 분류 기준선: 1.33%</b> (초과 시 공격 모드 / 이하 시 방어 모드)
-                </div>
+        <div class="control-panel">
+            <div class="control-header">📊 S&P 500 (SPY) 실시간 배당수익률 모니터링</div>
+            <div class="control-subheader">
+                야후 파이낸스(yfinance) API로부터 소수 및 백분율 단위를 실시간으로 정합 보정하여 산출한 데이터입니다.<br/>
+                • <b>실시간 배당수익률: {realtime_dy:.2f}%</b><br/>
+                • <b>모드 분류 기준선: 1.33%</b> (초과 시 공격 모드 / 이하 시 방어 모드)
             </div>
+        </div>
         """, unsafe_allow_html=True)
         
         if is_attack_c:
@@ -1124,8 +1184,8 @@ else:
         rank_data = []
         for ticker, metrics in data_dict.items():
             if ticker == "TIP":
-                continue  # 물가연동채는 카나리아 지표이므로 순위에서 제외
-                
+                continue # 물가연동채는 카나리아 지표이므로 순위에서 제외
+            
             rank_data.append({
                 "티커 (Ticker)": ticker,
                 "현재가 ($)": f"${metrics['현재가']:.2f}",
@@ -1134,9 +1194,8 @@ else:
                 "3개월 수익률 (%)": metrics["3M"],
                 "6개월 수익률 (%)": metrics["6M"],
                 "12개월 수익률 (%)": metrics["12M"],
-                
             })
-            
+        
         df_ranking = pd.DataFrame(rank_data)
         
         # 정렬 기준 매핑
@@ -1150,14 +1209,14 @@ else:
         
         selected_sort_col = sort_column_map[sort_by]
         df_ranking = df_ranking.sort_values(by=selected_sort_col, ascending=False).reset_index(drop=True)
-        df_ranking.index += 1  # 1등부터 순위 지정
+        df_ranking.index += 1 # 1등부터 순위 지정
         
         # 상위 5개 ETF 시각화 차트
         st.markdown(f"### 📊 Top 5 Performers ({sort_by} 기준)")
         df_top5 = df_ranking.head(5).copy()
         
         try:
-            import altair as alt  # <- 'import alt' 오타 오류 수정 완료!
+            import altair as alt # <- 'import alt' 오타 오류 수정 완료!
             top_chart = alt.Chart(df_top5).mark_bar(cornerRadiusEnd=6).encode(
                 x=alt.X(f"{selected_sort_col}:Q", title=sort_by),
                 y=alt.Y("티커 (Ticker):N", sort='-x', title="ETF 티커"),
@@ -1167,7 +1226,7 @@ else:
             st.altair_chart(top_chart, use_container_width=True)
         except Exception:
             st.bar_chart(df_top5.set_index("티커 (Ticker)")[selected_sort_col])
-            
+        
         # 전체 랭킹 테이블 출력
         st.markdown("### 🏆 실시간 모멘텀 순위표")
         st.dataframe(df_ranking, use_container_width=True)
@@ -1214,15 +1273,15 @@ else:
             calc_inflation = st.number_input("연 예상 물가상승률 (%)", min_value=0.0, max_value=20.0, value=3.0, step=0.1)
             calc_expense_start = st.number_input("지출 시작 시점 (년차)", min_value=1, max_value=max(1, calc_years), value=1, step=1, help="생활비 지출을 몇 년차부터 적용할지 연차를 지정합니다.")
             calc_tax_opt = st.selectbox("세율 설정", ["일반과세 (15.4%)", "미국주식양도세 (22.0%)", "비과세 계좌 (0.0% / ISA 및 연금저축)", "사용자 정의"])
-            
-            if calc_tax_opt == "일반과세 (15.4%)":
-                tax_rate = 15.4
-            elif calc_tax_opt == "미국주식양도세 (22.0%)":
-                tax_rate = 22.0
-            elif calc_tax_opt == "비과세 계좌 (0.0% / ISA 및 연금저축)":
-                tax_rate = 0.0
-            else:
-                tax_rate = st.number_input("세율 직접 입력 (%)", min_value=0.0, max_value=50.0, value=15.4, step=0.1)
+        
+        if calc_tax_opt == "일반과세 (15.4%)":
+            tax_rate = 15.4
+        elif calc_tax_opt == "미국주식양도세 (22.0%)":
+            tax_rate = 22.0
+        elif calc_tax_opt == "비과세 계좌 (0.0% / ISA 및 연금저축)":
+            tax_rate = 0.0
+        else:
+            tax_rate = st.number_input("세율 직접 입력 (%)", min_value=0.0, max_value=50.0, value=15.4, step=0.1)
 
         # 복리 연산 로직 (월 복리 정밀 시뮬레이션 및 생활비 인플레이션 차감, 세금, 물가 역산)
         records = []
@@ -1313,63 +1372,3 @@ else:
             df_display[col] = df_display[col].apply(format_krw)
         
         st.dataframe(df_display, use_container_width=True)
-
-
-    # ==================== 대시보드 공통 하단: 지난 12개월(최근 1년)간의 월말 기준 리밸런싱 역사 백테스트 ====================
-    with st.spinner("지난 12개월(최근 1년) 월말 포트폴리오 데이터를 로딩 및 역동 연산 중..."):
-        hist_prices, spy_divs_hist = get_historical_simulation_data(ALL_TICKERS)
-        
-    if hist_prices and "SPY" in hist_prices:
-        st.markdown("---")
-        st.markdown("### 📅 월말 기준 리밸런싱 포트폴리오 역사 (최근 1년)")
-        st.caption("매월 최종 영업일 마감 데이터를 기준으로 실시간 모멘텀과 시그널을 연산하여, 익월 1일 아침 리밸런싱 시 적용되는 혼합 포트폴리오 구성 비중입니다.")
-        
-        spy_series = hist_prices["SPY"]
-        df_spy_dates = spy_series.to_frame()
-        df_spy_dates['year'] = df_spy_dates.index.year
-        df_spy_dates['month'] = df_spy_dates.index.month
-        
-        # 년-월별 가장 마지막 영업일의 날짜 추출
-        month_ends = df_spy_dates.groupby(['year', 'month']).apply(lambda x: x.index[-1]).tolist()
-        
-        # 진행 중인 미완료 상태의 이번 달을 제외하고, 완료된 지난 12개월 수집
-        now = datetime.datetime.now()
-        completed_month_ends = [d for d in month_ends if not (d.year == now.year and d.month == now.month)]
-        completed_12_months = completed_month_ends[-12:]
-        completed_12_months.reverse() # 최신순 정렬 (최근 월이 먼저 보이도록)
-        
-        # 2열 그리드 배치로 공간 극대화 및 깔끔한 출력 유지
-        col_h1, col_h2 = st.columns(2)
-        for idx, date in enumerate(completed_12_months):
-            target_col = col_h1 if idx % 2 == 0 else col_h2
-            
-            # 해당 월말 시점의 최종 포트폴리오 및 시그널 역동 연산
-            hist_portfolio, sig_a, sig_b, sig_c, dy_c = compute_historical_portfolio_at_month_end(
-                hist_prices, spy_divs_hist, date,
-                OFFENSIVE_A, DEFENSIVE_A, OFFENSIVE_B, DEFENSIVE_B, OFFENSIVE_C, DEFENSIVE_C
-            )
-            
-            date_str = date.strftime("%Y년 %m월 %d일")
-            sig_text_a = "🟢 공격" if sig_a else "🛡️ 방어"
-            sig_text_b = "🟢 공격" if sig_b else "🛡️ 방어"
-            sig_text_c = "🟢 공격" if sig_c else "🛡️ 방어"
-            
-            with target_col:
-                with st.expander(f"📅 {date_str} 마감 기준 포트폴리오"):
-                    sm1, sm2, sm3 = st.columns(3)
-                    with sm1:
-                        st.caption("전략A 신호")
-                        st.markdown(f"**{sig_text_a}**")
-                    with sm2:
-                        st.caption("전략B 신호")
-                        st.markdown(f"**{sig_text_b}**")
-                    with sm3:
-                        st.caption("전략C 신호")
-                        st.markdown(f"**{sig_text_c}**<br/><small>({dy_c:.2f}%)</small>", unsafe_allow_html=True)
-                    
-                    st.markdown("**포트폴리오 비중:**")
-                    hist_rows = [{"자산명(Ticker)": k, "배분비중 (%)": f"{v:.2f}%"} for k, v in hist_portfolio.items()]
-                    if hist_rows:
-                        st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
-                    else:
-                        st.write("⚠️ 해당 기간 데이터 부족")
