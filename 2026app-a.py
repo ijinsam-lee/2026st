@@ -121,13 +121,13 @@ OFFENSIVE_C = ["FDN", "LIT", "SMH", "XLE"]  # 4대 주도 섹터
 DEFENSIVE_C = ["GLD", "PDBC", "OILK"]       # 3대 원자재 방어자산
 
 # 중복 없는 전체 티커 추출 (미국 ETF 랭킹 비교용 인기 자산군 SCHD, JEPI, TQQQ, SOXL, DIA, IWM, XLF 추가)
-ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C + ["SCHD", "JEPI", "TQQQ", "SOXL", "DIA", "IWM", "XLF"]))
+ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C + ["SCHD", "QQQM", "IGV", "XLU", "JEPI", "TQQQ", "SOXL", "DIA", "IWM", "XLF"]))
 
 # 관심매크로 지표 정의 및 심볼 매핑
 MACRO_TICKERS = {
     "달러/원": "USDKRW=X",
-    "달러/중국 위안": "USDCNY=X",
     "달러/엔": "USDJPY=X",
+    "달러/중국 위안": "USDCNY=X",
     "미국 달러 지수": "DX-Y.NYB",
     "미국 10년물 국채 금리": "^TNX",
     "WTI유": "CL=F",
