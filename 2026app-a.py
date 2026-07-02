@@ -1129,7 +1129,7 @@ else:
             rank_data.append({
                 "티커 (Ticker)": ticker,
                 "현재가 ($)": f"${metrics['현재가']:.2f}",
-                "종합 모멘텀 스코어": metrics["A_공격스코어"]
+                "종합 모멘텀 스코어": metrics["A_공격스코어"],
                 "1개월 수익률 (%)": metrics["1M"],
                 "3개월 수익률 (%)": metrics["3M"],
                 "6개월 수익률 (%)": metrics["6M"],
