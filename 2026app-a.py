@@ -127,11 +127,11 @@ ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B 
 MACRO_TICKERS = {
     "미국 10년물 국채 금리": "^TNX",
     "달러/원": "USDKRW=X",
-    "S&P 500 VIX": "^VIX",
+    "US 500 (S&P)": "^GSPC",
     "WTI유": "CL=F",
     "미국 물가연동채권": "TIP",
     "달러/엔": "USDJPY=X",
-    "US 500 (S&P)": "^GSPC",
+    "S&P 500 VIX": "^VIX",
     "S&P 500": "SPY",
     "미국 달러 지수": "DX-Y.NYB",
     "US Tech 100 (나스닥)": "^NDX",
