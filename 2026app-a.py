@@ -140,7 +140,7 @@ MACRO_TICKERS = {
 }
 
 # STREAMING_CHUNK: 매크로 시황판 데이터 수집...
-@st.cache_data(ttl=300) # 시황 데이터는 5분 단위 캐싱
+@st.cache_data(ttl=60) # 시황 데이터는 1분 단위 캐싱
 def get_macro_market_pulse():
     macro_data = []
     for name, symbol in MACRO_TICKERS.items():
