@@ -131,10 +131,10 @@ MACRO_TICKERS = {
     "WTI유": "CL=F",
     "미국 물가연동채권": "TIP",
     "달러/엔": "USDJPY=X",
-    "S&P 500 VIX": "^VIX",
+    "US Tech 100 (나스닥)": "^NDX",
     "S&P 500": "SPY",
     "미국 달러 지수": "DX-Y.NYB",
-    "US Tech 100 (나스닥)": "^NDX",
+    "S&P 500 VIX": "^VIX",
     "인베스코QQQ": "QQQ",
     "코스피 200": "^KS200"
 }
