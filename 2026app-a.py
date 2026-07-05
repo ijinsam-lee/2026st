@@ -126,15 +126,15 @@ ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B 
 # 관심매크로 지표 정의 및 심볼 매핑
 MACRO_TICKERS = {
     "미국 10년물 국채 금리": "^TNX",
-    "미국 물가연동채권": "TIP",
-    "미국 달러 지수": "DX-Y.NYB",
     "달러/원": "USDKRW=X",
-    "달러/엔": "USDJPY=X",
-    "WTI유": "CL=F",
     "S&P 500 VIX": "^VIX",
+    "WTI유": "CL=F",
+    "미국 물가연동채권": "TIP",
+    "달러/엔": "USDJPY=X",
     "US 500 (S&P)": "^GSPC",
-    "US Tech 100 (나스닥)": "^NDX",
     "S&P 500": "SPY",
+    "미국 달러 지수": "DX-Y.NYB",
+    "US Tech 100 (나스닥)": "^NDX",
     "인베스코QQQ": "QQQ",
     "코스피 200": "^KS200"
 }
