@@ -3,7 +3,6 @@ import yfinance as yf
 import pandas as pd
 import datetime
 
-# STREAMING_CHUNK: 모바일 화면 레이아웃 및 CSS 주입...
 st.set_page_config(page_title="동적 자산배분 대시보드", layout="centered", initial_sidebar_state="collapsed")
 
 # 프리미엄 그레이/슬레이트 톤 스타일 및 탭 선택바 강조 스타일 주입
@@ -109,16 +108,16 @@ st.caption("야후 파이낸스 실시간 데이터 기반 수시 리밸런싱 �
 
 # --- 1. 자산군 정의 ---
 # 전략A 자산군 (최신 리스트)
-OFFENSIVE_A = ["QQQ", "SPY", "IYM", "IBB", "SMH", "EEM", "XLK", "LIT", "XLE", "FEZ", "XLV", "XLU", "QTUM"]
-DEFENSIVE_A = ["GLD", "TLT", "XLV", "UBT"]
+OFFENSIVE_A = ["QQQ", "SPY", "GLD", "IBB", "SMH", "EEM", "XLK", "LIT", "XLE", "UBT", "XLV", "QTUM"]
+DEFENSIVE_A = ["BIL", "IEF", "AGG", "HYG", "TBX"]
 
 # 전략B 자산군 (레버리지/인버스)
 OFFENSIVE_B = ["TYD", "UPRO", "VNQ"]
 DEFENSIVE_B = ["DOG", "RWM", "TBF"]
 
 # 전략C (섹터로테이션) 자산군
-OFFENSIVE_C = ["FDN", "LIT", "SMH", "XLE"] # 4대 주도 섹터
-DEFENSIVE_C = ["GLD", "PDBC", "OILK"] # 3대 원자재 방어자산
+OFFENSIVE_C = ["FDN", "LIT", "SMH", "XLE", "IGV", "QQQM", "XLU"] # 최신섹터반영
+DEFENSIVE_C = ["GLD", "PDBC", "OILK", "SHY", "TLT"] # 3대 원자재 방어자산
 
 # 중복 없는 전체 티커 추출 (미국 ETF 랭킹 비교용 인기 자산군 SCHD, JEPI, TQQQ, SOXL, DIA, IWM, XLF 추가)
 ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C + ["SCHD", "QQQM", "IGV", "XLU", "JEPI", "TQQQ", "SOXL", "DIA", "IWM", "XLF"]))
@@ -139,7 +138,6 @@ MACRO_TICKERS = {
     "코스피 200": "^KS200"
 }
 
-# STREAMING_CHUNK: 매크로 시황판 데이터 수집...
 @st.cache_data(ttl=60) # 시황 데이터는 1분 단위 캐싱
 def get_macro_market_pulse():
     macro_data = []
@@ -257,7 +255,6 @@ def get_sp500_dividend_yield():
         pass
     return 1.32 # 기본값 백업
 
-# STREAMING_CHUNK: 역사 데이터 파싱 및 가공 함수 정의...
 # 과거 캐시 강제 무효화를 위한 고유 버전 함수 유지
 @st.cache_data(ttl=3600) 
 def get_all_financial_data_v2(tickers):
@@ -689,7 +686,6 @@ else:
 
 
     # ==================== TAB 1: 2026년 혼합 전략 (c_2026 컨테이너에 매핑) ====================
-    # STREAMING_CHUNK: 2026 혼합 전략 탭 내용 작성...
     with c_2026:
         st.header("🏆 2026년 혼합 전략")
         st.markdown(
@@ -994,7 +990,6 @@ else:
 
 
     # ==================== TAB 2: 전략 A (c_a 컨테이너에 매핑) ====================
-    # STREAMING_CHUNK: 전략 A 탭 내용 작성...
     with c_a:
         st.header("🛡️ 전략 A (안정형)")
         
@@ -1007,7 +1002,7 @@ else:
             * **1단계 (카나리아 국면 판독)**: TIP 현재 가격이 11개월 이동평균선($TIP_{11MA}$) 위에 존재하면 **공격 국면**, 선 아래에 위치하면 **방어 국면**으로 전환합니다.
             * **2단계 (공격/방어 자산 매수)**:
                 - **공격 국면 (공격 자산 13개)**: 모멘텀 스코어가 가장 높은 상위 4개 종목에 각 **$25\%$씩 균등 배분**합니다.
-                - **방어 국면 (방어 자산 4개)**: 모멘텀 스코어 상위 1개 자산에 **$100\%$ 집중 투자**하되, 해당 자산의 모멘텀 스코어마저 음수($< 0$)인 극단적 상황 시 **현금($100\%$)으로 전액 대피**합니다.
+                - **방어 국면 (방어 자산 5개)**: 모멘텀 스코어 상위 1개 자산에 **$100\%$ 집중 투자**하되, 해당 자산의 모멘텀 스코어마저 음수($< 0$)인 극단적 상황 시 **현금($100\%$)으로 전액 대피**합니다.
             
             ### 📈 실제 백테스트 지표 (전략A+EEM+QTUM 포트폴리오 실측 데이터 반영)
             """)
@@ -1153,7 +1148,6 @@ else:
 
 
     # ==================== TAB 3: 전략 B (c_b 컨테이너에 매핑) ====================
-    # STREAMING_CHUNK: 전략 B 탭 내용 작성...
     with c_b:
         st.header("⚡ 전략 B (공격형)")
         
@@ -1309,7 +1303,6 @@ else:
 
 
     # ==================== TAB 4: 전략 C (c_c 컨테이너에 매핑) ====================
-    # STREAMING_CHUNK: 전략 C 탭 내용 작성...
     with c_c:
         st.header("🔄 전략 C (섹터로테이션)")
         
@@ -1473,7 +1466,6 @@ else:
 
 
     # ==================== TAB 5: 미국 ETF 랭킹 (c_rank 컨테이너에 매핑) ====================
-    # STREAMING_CHUNK: 미국 ETF 랭킹 탭 내용 작성...
     with c_rank:
         st.header("🇺🇸 실시간 미국 ETF 랭킹")
         st.markdown(
@@ -1542,7 +1534,6 @@ else:
 
 
     # ==================== TAB 6: 자산 계산기 (c_calc 컨테이너에 매핑) ====================
-    # STREAMING_CHUNK: 자산 계산기 탭 내용 작성...
     with c_calc:
         st.header("🧮 복리의 마법 & 미래 계산기")
         st.markdown(
