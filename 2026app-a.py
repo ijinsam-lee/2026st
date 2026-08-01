@@ -128,8 +128,8 @@ MACRO_TICKERS = {
     "달러/원": "USDKRW=X",
     "WTI유": "CL=F",
     "미국 물가연동채권": "TIP",
-    "달러/엔": "USDJPY=X",
     "미국 달러 지수": "DX-Y.NYB",
+    "달러/엔": "USDJPY=X",
     "S&P 500 VIX": "^VIX",
        
 }
