@@ -117,7 +117,7 @@ DEFENSIVE_B = ["DOG", "RWM", "TBF"]
 
 # 전략C (섹터로테이션) 자산군
 OFFENSIVE_C = ["FDN", "LIT", "SMH", "XLE", "IGV", "QQQM", "XLU"] # 최신섹터반영
-DEFENSIVE_C = ["GLD", "PDBC", "OILK", "SHY", "TLT"] # 3대 원자재 방어자산
+DEFENSIVE_C = ["GLD", "PDBC", "OILK", "SHY", "TLT"] # 3대 원자재 및 채권 방어자산
 
 # 중복 없는 전체 티커 추출 (미국 ETF 랭킹 비교용 인기 자산군 SCHD, JEPI, TQQQ, SOXL, DIA, IWM, XLF 추가)
 ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C + ["SCHD", "QQQM", "IGV", "XLU", "JEPI", "TQQQ", "SOXL", "DIA", "IWM", "XLF"]))
@@ -126,16 +126,12 @@ ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B 
 MACRO_TICKERS = {
     "미국 10년물 국채 금리": "^TNX",
     "달러/원": "USDKRW=X",
-    "US 500 (S&P)": "^GSPC",
     "WTI유": "CL=F",
     "미국 물가연동채권": "TIP",
     "달러/엔": "USDJPY=X",
-    "US Tech 100 (나스닥)": "^NDX",
-    "S&P 500": "SPY",
     "미국 달러 지수": "DX-Y.NYB",
     "S&P 500 VIX": "^VIX",
-    "인베스코QQQ": "QQQ",
-    "코스피 200": "^KS200"
+       
 }
 
 @st.cache_data(ttl=60) # 시황 데이터는 1분 단위 캐싱
