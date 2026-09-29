@@ -442,6 +442,166 @@ def run_backtest_strategy_mix_full(monthly_px, spy_divs):
 
     return pd.DataFrame(records)
 
+# ============================================================
+# 2026 혼합전략 [개선판] 백테스트 엔진
+#   - 2019년 5월 무역전쟁 급락(-13.0% MDD) 원인 분석 결과, 특정 자산(SMH 41.66%, UPRO 33.33% 등)에
+#     3개 전략의 비중이 중복 쏠리는 현상이 최대 낙폭의 핵심 원인으로 확인되었습니다.
+#   - 1단계 개선: 단일 자산군 비중 상한(Cap)
+#     3개 전략(각 33.33%)을 합산했을 때 특정 티커의 최종 비중이 상한(기본 25%)을 넘으면
+#     초과분을 현금(CASH)으로 자동 전환하여 강제 분산시킵니다.
+#   - 2단계 개선: 전략 B 변동성 동적 조절
+#     리밸런싱 결정 시점(전월 말)의 VIX가 임계치(기본 25)를 초과하면, 전략 B의 레버리지 공격
+#     자산(TYD/UPRO/VNQ) 비중을 100%에서 50%로 줄이고 나머지 50%를 현금으로 전환합니다.
+#   - 3단계 개선: 월중 하드스탑(Intra-month Stop-loss)
+#     일별 가격으로 월중 누적 손실을 감시하다가, 포트폴리오가 월초(전월 말 종가) 대비 임계치
+#     (기본 -7%)까지 하락하면 그 시점 이후 월말까지 전량 현금화한 것으로 간주해 추가 손실을 차단합니다.
+#   - (4단계: 상관관계 기반 필터링은 이후 단계에서 순차 적용 예정)
+# ============================================================
+@st.cache_data(ttl=3600)
+def run_backtest_strategy_mix_improved_full(
+    monthly_px, spy_divs, daily_px=None,
+    apply_cap=False, weight_cap=25.0,
+    apply_vix_dampening=False, vix_threshold=25.0,
+    apply_stop_loss=False, stop_loss_pct=-7.0,
+):
+    bt_a = run_backtest_strategy_a_full(monthly_px)
+    bt_b = run_backtest_strategy_b_full(monthly_px)
+    bt_c = run_backtest_strategy_c_full(monthly_px, spy_divs)
+
+    if bt_a.empty or bt_b.empty or bt_c.empty:
+        return pd.DataFrame()
+
+    bt_a = bt_a.set_index("date")
+    bt_b = bt_b.set_index("date")
+    bt_c = bt_c.set_index("date")
+
+    common_dates = sorted(set(bt_a.index) & set(bt_b.index) & set(bt_c.index))
+    if not common_dates:
+        return pd.DataFrame()
+
+    monthly_returns = monthly_px.pct_change().shift(-1)
+    monthly_idx = monthly_px.index
+    has_vix = "^VIX" in monthly_px.columns
+    offensive_b_set = set(OFFENSIVE_B)
+    can_stop_loss = apply_stop_loss and daily_px is not None
+
+    records = []
+    nav = 100.0
+    peak = 100.0
+
+    for d in common_dates:
+        alloc_a = dict(bt_a.loc[d, "alloc"])
+        alloc_b = dict(bt_b.loc[d, "alloc"])
+        alloc_c = dict(bt_c.loc[d, "alloc"])
+
+        try:
+            pos = monthly_idx.get_loc(d)
+        except KeyError:
+            continue
+        # d는 "수익이 실현되는 시점"이므로, 그 직전 월(pos-1)이 리밸런싱 결정 시점
+        decision_pos = pos - 1 if pos > 0 else None
+        decision_date = monthly_idx[decision_pos] if decision_pos is not None else None
+
+        # --- 2단계 개선 로직: 전략 B 변동성 동적 조절 (결정 시점 VIX 확인) ---
+        vol_note = ""
+        if apply_vix_dampening and has_vix and decision_pos is not None:
+            vix_val = monthly_px["^VIX"].iloc[decision_pos]
+            if pd.notna(vix_val) and vix_val > vix_threshold:
+                new_alloc_b = {}
+                changed = False
+                for t, w in alloc_b.items():
+                    if t in offensive_b_set:
+                        new_alloc_b[t] = new_alloc_b.get(t, 0.0) + w * 0.5
+                        new_alloc_b["CASH (현금)"] = new_alloc_b.get("CASH (현금)", 0.0) + w * 0.5
+                        changed = True
+                    else:
+                        new_alloc_b[t] = new_alloc_b.get(t, 0.0) + w
+                if changed:
+                    alloc_b = new_alloc_b
+                    vol_note = " ⚡VIX완화"
+
+        # --- 3개 전략(각 33.33%) 결합 ---
+        combined_alloc = {}
+        for src in (alloc_a, alloc_b, alloc_c):
+            for t, w in src.items():
+                combined_alloc[t] = combined_alloc.get(t, 0.0) + (w / 100.0) * (1.0 / 3.0) * 100.0
+
+        # --- 1단계 개선 로직: 단일 자산군 비중 상한(Cap) ---
+        cap_note = ""
+        if apply_cap:
+            capped_alloc = {}
+            excess_cash = 0.0
+            for t, w in combined_alloc.items():
+                if t == "CASH (현금)":
+                    continue
+                if w > weight_cap:
+                    capped_alloc[t] = weight_cap
+                    excess_cash += (w - weight_cap)
+                else:
+                    capped_alloc[t] = w
+            capped_alloc["CASH (현금)"] = combined_alloc.get("CASH (현금)", 0.0) + excess_cash
+            if excess_cash > 0.01:
+                cap_note = " 📐Cap적용"
+            combined_alloc = capped_alloc
+
+        final_alloc = combined_alloc
+
+        # --- 수익률 계산 (기본: 월간 수익률) ---
+        port_ret = 0.0
+        if decision_pos is not None:
+            for t, w in final_alloc.items():
+                if t != "CASH (현금)" and t in monthly_returns.columns:
+                    r = monthly_returns[t].iloc[decision_pos]
+                    if pd.notna(r):
+                        port_ret += (w / 100.0) * r
+
+        # --- 3단계 개선 로직: 월중 하드스탑 (일별 가격으로 월중 낙폭 감시) ---
+        stop_note = ""
+        if can_stop_loss and decision_date is not None:
+            tickers_held = [t for t in final_alloc if t != "CASH (현금)" and final_alloc[t] > 0.01 and t in daily_px.columns]
+            day_mask = (daily_px.index > decision_date) & (daily_px.index <= d)
+            day_slice = daily_px.loc[day_mask]
+            prior_prices_df = daily_px.loc[:decision_date]
+
+            if len(day_slice) > 0 and tickers_held and len(prior_prices_df) > 0:
+                start_prices = prior_prices_df.iloc[-1]
+                cum_val = pd.Series(0.0, index=day_slice.index)
+                for t in tickers_held:
+                    w = final_alloc[t] / 100.0
+                    if pd.isna(start_prices[t]) or start_prices[t] == 0:
+                        continue
+                    t_ret = day_slice[t] / start_prices[t] - 1.0
+                    cum_val = cum_val + (t_ret.fillna(0.0) * w)
+
+                stop_triggered = cum_val[cum_val * 100.0 <= stop_loss_pct]
+                if len(stop_triggered) > 0:
+                    port_ret = stop_triggered.iloc[0]
+                    stop_note = " 🛑월중손절"
+                elif len(cum_val) > 0:
+                    port_ret = cum_val.iloc[-1]  # 일별 경로 기준 최종 수익률 (월간 수익률과 근사적으로 일치)
+
+        nav *= (1 + port_ret)
+        peak = max(peak, nav)
+        dd = (nav / peak - 1) * 100
+
+        mode_a_short = bt_a.loc[d, "mode"].split(" ")[0]
+        mode_b_short = bt_b.loc[d, "mode"].split(" ")[0]
+        mode_c_short = bt_c.loc[d, "mode"].split(" ")[0]
+        mode_str = f"A:{mode_a_short} / B:{mode_b_short} / C:{mode_c_short}{vol_note}{cap_note}{stop_note}"
+        weights_str = ", ".join([f"{t} {w:.1f}%" for t, w in final_alloc.items() if w > 0.01])
+
+        records.append({
+            "date": d,
+            "mode": mode_str,
+            "nav": nav,
+            "monthly_return": port_ret * 100,
+            "drawdown": dd,
+            "weights_str": weights_str,
+            "alloc": dict(final_alloc),
+        })
+
+    return pd.DataFrame(records)
+
 # 관심매크로 지표 정의 및 심볼 매핑 (미국 30년물 국채 금리 추가)
 MACRO_TICKERS = {
     "미국 10년물 국채 금리": "^TNX",
@@ -451,7 +611,7 @@ MACRO_TICKERS = {
     "미국 물가연동채권": "TIP",
     "미국 달러 지수": "DX-Y.NYB",
     "달러/엔": "USDJPY=X",
-    "VIX (변동성)": "^VIX",
+    "CBOE VIX": "^VIX",
 }
 
 @st.cache_data(ttl=60) # 시황 데이터는 1분 단위 캐싱
@@ -1054,6 +1214,14 @@ else:
             2. **전략별 자산 확정**: 전략 A는 모멘텀 상위 4자산(공격) 또는 1자산(방어), 전략 B·C는 각각 상위 1자산을 선정합니다.
             3. **동일비중 결합**: 세 전략의 산출 비중을 각 33.33%씩 환산·합산하여 매월 리밸런싱을 실행합니다.
 
+            #### 🛡️ MDD 개선 로드맵 (단계적 적용 중)
+            2019년 5월 무역전쟁 급락 당시 -13.0%의 최대 낙폭(MDD)이 발생한 원인을 분석한 결과, 3개 전략이 독립적으로 신호를 계산하다 보니
+            SMH(41.66%)·UPRO(33.33%) 등 특정 자산·섹터에 비중이 중복 쏠리는 현상이 핵심 원인으로 확인되었습니다. 아래 4가지 개선안을 단계적으로 적용합니다.
+            - ✅ **1단계 (적용 가능)**: 단일 자산군 비중 상한(Cap 25%) — 아래 백테스트 성과 분석 섹션의 체크박스로 지금 바로 켜고 끄며 비교할 수 있습니다.
+            - ✅ **2단계 (적용 가능)**: 전략 B 변동성 동적 조절 — 리밸런싱 결정 시점 VIX가 25 초과 시 레버리지(TYD/UPRO/VNQ) 비중을 절반으로 축소, 역시 체크박스로 On/Off 가능합니다.
+            - ✅ **3단계 (적용 가능)**: 월중 하드스탑(Intra-month Stop-loss) — 월중 낙폭이 -7%에 도달하면 즉시 현금화, 체크박스로 On/Off 가능합니다.
+            - ⏳ **4단계 (예정)**: 상관관계 기반 필터링 — 공격 자산 후보가 특정 섹터로만 쏠리지 않도록 로직 보완
+
             > 실제 장기 성과(CAGR, MDD, 연도별/월별 수익률 등)는 아래 **🛑 2026 혼합전략 백테스트 성과 분석** 섹션에서 야후 파이낸스 실시간 데이터를 기반으로 항상 최신 상태로 자동 계산됩니다.
             """)
 
@@ -1219,19 +1387,52 @@ else:
                 key="bt_start_select_mix"
             )
             bt_start_mix = bt_start_label_mix.split(" ")[0]
+            st.markdown("**🛡️ MDD 개선 로직 (단계별 적용 — 개별 On/Off 가능)**")
+            apply_cap_mix = st.checkbox(
+                "1단계: 단일 자산군 비중 상한(Cap 25%) 적용",
+                value=False,
+                key="apply_cap_mix",
+                help="2019년 5월 무역전쟁 급락 시 SMH(41.66%)·UPRO(33.33%) 등 특정 자산에 3개 전략 비중이 겹치며 MDD가 커졌던 문제를 보완합니다. "
+                     "3개 전략을 합산했을 때 단일 티커 비중이 25%를 넘으면 초과분을 현금으로 자동 전환합니다."
+            )
+            apply_vix_mix = st.checkbox(
+                "2단계: 전략 B 변동성 동적 조절 (VIX 임계치 초과 시 레버리지 비중 절반 축소)",
+                value=False,
+                key="apply_vix_mix",
+                help="리밸런싱 결정 시점(전월 말)의 VIX가 25를 초과하면, 전략 B의 레버리지 공격 자산(TYD/UPRO/VNQ) 비중을 "
+                     "100%에서 50%로 줄이고 나머지 50%를 현금으로 전환합니다. 시장이 이미 불안한 상태에서 몰빵 리스크를 낮춥니다."
+            )
+            apply_stop_mix = st.checkbox(
+                "3단계: 월중 하드스탑 (월중 낙폭 -7% 도달 시 즉시 현금화)",
+                value=False,
+                key="apply_stop_mix",
+                help="월말 리밸런싱만으로는 2019년 5월 무역전쟁 급락 같은 월중 기습 악재에 대응할 수 없었던 한계를 보완합니다. "
+                     "일별 가격으로 월중 누적 손실을 감시하다가 월초(전월 말) 대비 -7%까지 하락하면, 그 시점 이후 월말까지 전량 현금 보유로 간주해 추가 손실을 차단합니다."
+            )
+            st.caption("(4단계: 상관관계 기반 필터링은 다음 단계에서 순차 적용 예정)")
             st.caption("선택한 시작일 기준으로 2026 혼합전략(전략A+B+C 33.33%씩) 백테스트 시뮬레이션이 즉시 재계산됩니다.")
             st.markdown('</div>', unsafe_allow_html=True)
+
+        use_improved_mix = apply_cap_mix or apply_vix_mix or apply_stop_mix
 
         with st.spinner("2026 혼합전략 실시간 백테스트 엔진 구동 중... (전략 A+B+C 통합 연산)"):
             try:
                 bt_tickers_mix = sorted(set(
                     OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C
-                    + ["TIP", "SPY", "QQQ"]
+                    + ["TIP", "SPY", "QQQ", "^VIX"]
                 ))
                 daily_px_mix = get_daily_price_history_a(bt_tickers_mix, start=bt_start_mix)
                 monthly_px_mix = to_monthly_last_a(daily_px_mix)
                 spy_divs_mix = get_spy_dividend_history()
-                bt_results_mix = run_backtest_strategy_mix_full(monthly_px_mix, spy_divs_mix)
+                if use_improved_mix:
+                    bt_results_mix = run_backtest_strategy_mix_improved_full(
+                        monthly_px_mix, spy_divs_mix, daily_px=daily_px_mix,
+                        apply_cap=apply_cap_mix, weight_cap=25.0,
+                        apply_vix_dampening=apply_vix_mix, vix_threshold=25.0,
+                        apply_stop_loss=apply_stop_mix, stop_loss_pct=-7.0,
+                    )
+                else:
+                    bt_results_mix = run_backtest_strategy_mix_full(monthly_px_mix, spy_divs_mix)
                 bt_ok_mix = len(bt_results_mix) > 0
             except Exception as e:
                 st.error(f"2026 혼합전략 백테스트 데이터 로딩 중 오류가 발생했습니다: {e}")
@@ -1241,6 +1442,15 @@ else:
             st.warning("백테스트 데이터가 부족하거나 오류가 있습니다. 잠시 후 다시 시도해 주세요.")
         else:
             st.caption(f"시뮬레이션 기간: {bt_results_mix['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_mix['date'].iloc[-1].strftime('%Y-%m')}")
+            if use_improved_mix:
+                applied_stages = []
+                if apply_cap_mix:
+                    applied_stages.append("1단계(비중상한)")
+                if apply_vix_mix:
+                    applied_stages.append("2단계(VIX완화)")
+                if apply_stop_mix:
+                    applied_stages.append("3단계(월중손절)")
+                st.success(f"🛡️ [개선판] {' + '.join(applied_stages)} 로직이 적용된 결과입니다. 체크박스를 해제하면 기존 로직과 바로 비교할 수 있습니다.")
 
             total_days_mix = (bt_results_mix["date"].iloc[-1] - bt_results_mix["date"].iloc[0]).days
             total_years_mix = total_days_mix / 365.25 if total_days_mix > 0 else 1.0
