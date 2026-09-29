@@ -548,6 +548,9 @@ def run_backtest_strategy_mix_full(monthly_px, spy_divs):
             "drawdown": dd,
             "weights_str": weights_str,
             "alloc": combined_alloc,
+            "contrib_a": ret_a / 3.0 * 100,
+            "contrib_b": ret_b / 3.0 * 100,
+            "contrib_c": ret_c / 3.0 * 100,
         })
 
     return pd.DataFrame(records)
@@ -642,6 +645,8 @@ def run_backtest_strategy_mix_improved_full(
             for t, w in src.items():
                 combined_alloc[t] = combined_alloc.get(t, 0.0) + (w / 100.0) * (1.0 / 3.0) * 100.0
 
+        combined_pre_cap = dict(combined_alloc)
+
         # --- 1단계 개선 로직: 단일 자산군 비중 상한(Cap) ---
         cap_note = ""
         if apply_cap:
@@ -671,6 +676,22 @@ def run_backtest_strategy_mix_improved_full(
                     if pd.notna(r):
                         port_ret += (w / 100.0) * r
 
+        # --- 전략별(A/B/C) 수익 기여도 분해 (Cap 축소 비율 반영, 합계 = port_ret) ---
+        cap_scale = {}
+        for t, w in final_alloc.items():
+            pre_w = combined_pre_cap.get(t, 0.0)
+            cap_scale[t] = (w / pre_w) if pre_w > 0 else 0.0
+        strat_srcs = (("a", alloc_a), ("b", alloc_b), ("c", alloc_c))
+        contrib = {"a": 0.0, "b": 0.0, "c": 0.0}
+        if decision_pos is not None:
+            for k, src in strat_srcs:
+                for t, w in src.items():
+                    if t == "CASH (현금)" or t not in monthly_returns.columns:
+                        continue
+                    r = monthly_returns[t].iloc[decision_pos]
+                    if pd.notna(r):
+                        contrib[k] += (w / 300.0) * cap_scale.get(t, 0.0) * r
+
         # --- 3단계 개선 로직: 월중 하드스탑 (일별 가격으로 월중 낙폭 감시) ---
         stop_note = ""
         stop_date_str = ""
@@ -683,12 +704,15 @@ def run_backtest_strategy_mix_improved_full(
             if len(day_slice) > 0 and tickers_held and len(prior_prices_df) > 0:
                 start_prices = prior_prices_df.iloc[-1]
                 cum_val = pd.Series(0.0, index=day_slice.index)
+                cum_s = {k: pd.Series(0.0, index=day_slice.index) for k in ("a", "b", "c")}
                 for t in tickers_held:
                     w = final_alloc[t] / 100.0
                     if pd.isna(start_prices[t]) or start_prices[t] == 0:
                         continue
                     t_ret = day_slice[t] / start_prices[t] - 1.0
                     cum_val = cum_val + (t_ret.fillna(0.0) * w)
+                    for k, src in strat_srcs:
+                        cum_s[k] = cum_s[k] + t_ret.fillna(0.0) * (src.get(t, 0.0) / 300.0 * cap_scale.get(t, 0.0))
 
                 stop_triggered = cum_val[cum_val * 100.0 <= stop_loss_pct]
                 if len(stop_triggered) > 0:
@@ -696,8 +720,10 @@ def run_backtest_strategy_mix_improved_full(
                     trigger_date = stop_triggered.index[0]
                     stop_date_str = pd.Timestamp(trigger_date).strftime("%Y-%m-%d")
                     stop_note = f" 🛑월중손절({stop_date_str}, {port_ret*100:.1f}%)"
+                    contrib = {k: float(cum_s[k].loc[trigger_date]) for k in cum_s}
                 elif len(cum_val) > 0:
                     port_ret = cum_val.iloc[-1]  # 일별 경로 기준 최종 수익률 (월간 수익률과 근사적으로 일치)
+                    contrib = {k: float(cum_s[k].iloc[-1]) for k in cum_s}
 
         nav *= (1 + port_ret)
         peak = max(peak, nav)
@@ -718,9 +744,29 @@ def run_backtest_strategy_mix_improved_full(
             "weights_str": weights_str,
             "alloc": dict(final_alloc),
             "stop_loss_date": stop_date_str,
+            "contrib_a": contrib["a"] * 100,
+            "contrib_b": contrib["b"] * 100,
+            "contrib_c": contrib["c"] * 100,
         })
 
     return pd.DataFrame(records)
+
+def mix_breakdown_str(bt, s_pos, e_pos, total_pct, force_sign=False):
+    """혼합전략 구간(s_pos~e_pos 행, 포함) 성과를 '합계 (A x + B y + C z)' 형태로 표현.
+    각 전략 기여도 = Σ(전월 NAV × 전략 기여수익률) / 구간 시작 NAV → 세 값의 합 = 구간 수익률."""
+    if not all(c in bt.columns for c in ("contrib_a", "contrib_b", "contrib_c")):
+        return f"{total_pct:+.1f}%" if force_sign else f"{total_pct:.1f}%"
+    navs = bt["nav"].values
+    nav_prev = np.empty(len(navs))
+    nav_prev[0] = 100.0
+    nav_prev[1:] = navs[:-1]
+    nav_start = nav_prev[s_pos]
+    parts = {}
+    for k in ("a", "b", "c"):
+        c = bt[f"contrib_{k}"].values
+        parts[k] = float(np.sum(nav_prev[s_pos:e_pos + 1] * c[s_pos:e_pos + 1] / 100.0) / nav_start * 100.0)
+    total_txt = f"{total_pct:+.1f}%" if force_sign else f"{total_pct:.1f}%"
+    return f"{total_txt} (A {parts['a']:+.1f}% + B {parts['b']:+.1f}% + C {parts['c']:+.1f}%)"
 
 # 관심매크로 지표 정의 및 심볼 매핑 (미국 30년물 국채 금리 추가)
 MACRO_TICKERS = {
@@ -1816,6 +1862,8 @@ else:
                         "시작": pd.Timestamp(dd_dates_mix[start_i]).strftime("%Y/%m"),
                         "종료": pd.Timestamp(dd_dates_mix[min_idx]).strftime("%Y/%m"),
                         "드로우다운": min_val,
+                        "_s": start_i,
+                        "_e": min_idx,
                     })
                     i_ep = j_ep
                 else:
@@ -1825,7 +1873,7 @@ else:
             top10_mix = episodes_mix[:10]
             for idx, ep in enumerate(top10_mix):
                 ep["순위"] = idx + 1
-                ep["드로우다운"] = f"{ep['드로우다운']:.1f}%"
+                ep["드로우다운"] = mix_breakdown_str(bt_results_mix, ep["_s"], ep["_e"], ep["드로우다운"])
             if top10_mix:
                 df_dd_top10_mix = pd.DataFrame(top10_mix)[["순위", "시작", "종료", "드로우다운"]]
                 st.dataframe(df_dd_top10_mix, use_container_width=True, hide_index=True)
@@ -1852,7 +1900,9 @@ else:
                     "스트레스 기간": label,
                     "시작": s_ts.strftime("%Y/%m"),
                     "종료": e_ts.strftime("%Y/%m"),
-                    "포트폴리오 수익률": f"{port_cum_mix:+.1f}%",
+                    "포트폴리오 수익률": mix_breakdown_str(
+                        bt_results_mix, int(sub_mix.index[0]), int(sub_mix.index[-1]), port_cum_mix, force_sign=True
+                    ),
                     "QQQ 수익률": f"{qqq_cum_mix:+.1f}%",
                 })
             if stress_rows_mix:
