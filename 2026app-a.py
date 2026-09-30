@@ -1055,6 +1055,14 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
 #   - 직전 월말에 확정된 혼합 포트폴리오를 이번 달 보유 포트폴리오로 보고,
 #     직전 월말 종가 대비 일별 누적 수익률을 백테스트와 같은 방식(비중 × 종목 누적수익률 합)으로 계산합니다.
 # ============================================================
+def now_us_eastern():
+    """미국 동부 시간 기준 현재 시각 (한국 시간과 날짜가 달라 월말 판정이 어긋나는 문제 방지)."""
+    try:
+        return pd.Timestamp.now(tz="America/New_York").tz_localize(None)
+    except Exception:
+        return pd.Timestamp(datetime.datetime.utcnow() - datetime.timedelta(hours=4))
+
+
 @st.cache_data(ttl=300)
 def get_intramonth_daily_prices(tickers, start):
     """보유 종목의 일별 종가 (5분 캐시). tickers는 tuple."""
@@ -1105,13 +1113,31 @@ def render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="mix"):
     spy_idx = hist_prices["SPY"].index
     if getattr(spy_idx, "tz", None) is not None:
         spy_idx = spy_idx.tz_localize(None)
-    now = datetime.datetime.now()
+    # 월 판정은 미국 동부 시간 기준 (한국 시간 새벽에는 미국이 아직 전날 장중)
+    now = now_us_eastern()
     month_ends = pd.Series(spy_idx, index=spy_idx).groupby([spy_idx.year, spy_idx.month]).max().tolist()
-    completed = [d for d in month_ends if not (d.year == now.year and d.month == now.month)]
+    completed = [pd.Timestamp(d) for d in month_ends if not (d.year == now.year and d.month == now.month)]
     if not completed:
         st.info("직전 월말 데이터가 없습니다.")
         return
-    base_date = pd.Timestamp(completed[-1])
+
+    if st.button("🔄 최신 가격으로 새로고침", key=f"intramonth_refresh_{strategy}"):
+        get_intramonth_daily_prices.clear()
+
+    base_date = completed[-1]
+    view_end = None      # 지난달 표시 모드일 때 마지막 날짜
+    period_word = "이번 달"
+    # 새 달 첫 거래일 데이터가 아직 없으면 → 지난달 일별 흐름을 대신 표시
+    spy_fresh = get_intramonth_daily_prices(("SPY",), (base_date - pd.Timedelta(days=10)).strftime("%Y-%m-%d"))
+    spy_dates = spy_fresh.index if not spy_fresh.empty else spy_idx
+    if not (spy_dates > base_date).any() and len(completed) >= 2:
+        view_end = base_date
+        base_date = completed[-2]
+        period_word = f"지난달({view_end.month}월)"
+        st.info(
+            f"{view_end.strftime('%Y-%m-%d')} 이후 새 달 거래일 데이터가 아직 없어 "
+            f"{view_end.month}월 한 달의 일별 흐름을 표시합니다. 새 달 첫 거래일 장 마감 뒤 자동으로 이번 달로 바뀝니다."
+        )
 
     # 2) 그 월말 기준 혼합 포트폴리오 (월말 리밸런싱 역사와 같은 계산)
     held_mix, _, _, _, _, parts = compute_historical_portfolio_at_month_end(
@@ -1148,11 +1174,8 @@ def render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="mix"):
         f"{f'하드스탑 임계치 {stop_pct:.1f}% (백테스트 설정값과 연동) · ' if is_mix else ''}가격은 5분마다 갱신"
     )
 
-    if st.button("🔄 최신 가격으로 새로고침", key=f"intramonth_refresh_{strategy}"):
-        get_intramonth_daily_prices.clear()
-
     if not risky:
-        st.info(f"이번 달 {label} 포트폴리오는 전량 현금 보유라 월중 손실 위험이 없습니다.")
+        st.info(f"{period_word} {label} 포트폴리오는 전량 현금 보유라 월중 손실 위험이 없습니다.")
         return
 
     start = (base_date - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
@@ -1167,6 +1190,8 @@ def render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="mix"):
 
     base_px = px[px.index <= base_date]
     month_px = px[px.index > base_date]
+    if view_end is not None:
+        month_px = month_px[month_px.index <= view_end]
     if base_px.empty:
         st.warning("기준일 종가를 찾지 못했습니다.")
         return
@@ -1303,18 +1328,26 @@ def render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="mix"):
         st.line_chart(df_days.set_index("날짜")["월초 대비 누적 (%)"])
 
     if is_mix:
+        # 괄호 안 = 전략 A·B·C의 기여도(%p). 세 값을 더하면 합계와 정확히 같음
+        def _fmt_combo(total, a, b, c):
+            total, a, b, c = [0.0 if abs(v) < 0.005 else v for v in (total, a, b, c)]  # "-0.00" 방지
+            s_ = f"{a:.2f}"
+            for v in (b, c):
+                s_ += f"+{v:.2f}" if v >= 0 else f"{v:.2f}"
+            return f"{total:.2f} ({s_})"
+
         df_days_view = pd.DataFrame({
             "날짜": cum_pct.index,
-            "일간 A (%p)": part_daily_pct["A"].values,
-            "일간 B (%p)": part_daily_pct["B"].values,
-            "일간 C (%p)": part_daily_pct["C"].values,
-            "일간 합계 (%)": daily_pct.values,
-            "누적 A (%p)": part_cum_pct["A"].values,
-            "누적 B (%p)": part_cum_pct["B"].values,
-            "누적 C (%p)": part_cum_pct["C"].values,
-            "월초 대비 누적 합계 (%)": cum_pct.values,
+            "일간 수익률 (%) (A+B+C)": [
+                _fmt_combo(daily_pct.iloc[i], part_daily_pct["A"].iloc[i], part_daily_pct["B"].iloc[i], part_daily_pct["C"].iloc[i])
+                for i in range(len(cum_pct))
+            ],
+            "월초 대비 누적 (%) (A+B+C)": [
+                _fmt_combo(cum_pct.iloc[i], part_cum_pct["A"].iloc[i], part_cum_pct["B"].iloc[i], part_cum_pct["C"].iloc[i])
+                for i in range(len(cum_pct))
+            ],
+            "하드스탑까지 여유 (%p)": (cum_pct - stop_pct).round(2).values,
         }).sort_values("날짜", ascending=False)
-        df_days_view["하드스탑까지 여유 (%p)"] = df_days_view["월초 대비 누적 합계 (%)"] - stop_pct
     else:
         df_days_view = df_days.sort_values("날짜", ascending=False).copy()
     df_days_view["날짜"] = df_days_view["날짜"].dt.strftime("%Y-%m-%d")
@@ -1322,6 +1355,12 @@ def render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="mix"):
         df_days_view.round(2), use_container_width=True, hide_index=True,
         height=(len(df_days_view) + 1) * 35 + 3,
     )
+    if is_mix:
+        st.caption(
+            "※ 괄호 안은 전략 A·B·C가 혼합 포트폴리오 수익률에 기여한 값(%p)이며, 세 값을 더하면 앞의 합계와 같습니다"
+            "(표시값은 소수 둘째 자리 반올림이라 0.01 차이가 날 수 있음). "
+            "각 전략의 단독 수익률은 전략 A·B·C 탭에서 확인할 수 있습니다."
+        )
 
     st.markdown("**종목별 월초 대비 수익률과 기여도**")
     df_contrib = pd.DataFrame(contrib_rows).sort_values("포트폴리오 기여 (%p)")
@@ -1886,7 +1925,7 @@ digraph G {
             
             month_ends = df_spy_dates.groupby(['year', 'month']).apply(lambda x: x.index[-1]).tolist()
             
-            now = datetime.datetime.now()
+            now = now_us_eastern()  # 미국 동부 시간 기준 (한국 새벽에 미국 장중인 월말을 '완료'로 잘못 판정하지 않도록)
             completed_month_ends = [d for d in month_ends if not (d.year == now.year and d.month == now.month)]
             completed_12_months = completed_month_ends[-12:]
             completed_12_months.reverse()
