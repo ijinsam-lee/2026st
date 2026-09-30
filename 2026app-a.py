@@ -125,132 +125,37 @@ DEFENSIVE_C = ["GLD", "PDBC", "OILK", "SHY", "TLT"] # 3대 원자재 및 채권 
 ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C + ["SCHD", "QQQM", "IGV", "XLU", "JEPI", "TQQQ", "SOXL", "DIA", "IWM", "XLF"]))
 
 # ============================================================
-# [1단계 개선] 전략 C 배당수익률 신호 설정
-#  적용 여부·수치는 화면의 '⚙️ 전략 C 배당 신호 설정' 패널에서 바꿉니다. (기본값: 기존 방식)
-#  mode  "fixed"     = 기존 방식 (조정가 기반 배당수익률 > 고정 기준선)
-#        "fixed_raw" = 비조정 종가 기반 배당수익률 > 고정 기준선 (가격 왜곡만 바로잡은 중간 단계, 비교용)
-#        "zscore"    = 비조정 배당수익률의 롤링 Z-Score > 임계값 (1단계 개선)
-#  cfg = (mode, z_window_months, z_threshold, fixed_threshold)
+# 혼합전략 백테스트 요약 지표 (안전장치 전/후 비교표용)
 # ============================================================
-DEFAULT_DY_CFG = ("fixed", 36, -0.5, 1.33)
-
-@st.cache_data(ttl=3600)
-def get_spy_dy_raw(start="2008-01-01"):
-    """SPY 월말 배당수익률(%) 시계열. 비조정 종가(auto_adjust=False) 사용:
-    조정가를 쓰면 과거 배당수익률이 실제보다 과대 계산됨. 60개월 Z까지 커버하도록 2008년부터 수집."""
-    try:
-        tk = yf.Ticker("SPY")
-        px = tk.history(start=start, interval="1d", auto_adjust=False)["Close"].dropna()
-        divs = tk.dividends.copy()
-        if px.empty or divs.empty:
-            return pd.Series(dtype=float)
-        if px.index.tz is not None:
-            px.index = px.index.tz_localize(None)
-        if divs.index.tz is not None:
-            divs.index = divs.index.tz_localize(None)
-        px_m = px.resample("ME").last().dropna()
-        vals = []
-        for d, price in px_m.items():
-            ttm = divs[(divs.index > d - pd.Timedelta(days=365)) & (divs.index <= d)].sum()
-            vals.append(ttm / price * 100 if price > 0 and ttm > 0 else np.nan)
-        return pd.Series(vals, index=px_m.index, name="dy")
-    except Exception:
-        return pd.Series(dtype=float)
-
-def get_spy_dy_table(window=36):
-    """월말 배당수익률(dy)과 롤링 평균/표준편차/Z-Score 테이블."""
-    dy = get_spy_dy_raw()
-    if dy is None or len(dy) == 0:
-        return pd.DataFrame()
-    tbl = pd.DataFrame({"dy": dy})
-    tbl["mean"] = tbl["dy"].rolling(int(window)).mean()
-    tbl["std"] = tbl["dy"].rolling(int(window)).std()
-    tbl["z"] = np.where(tbl["std"] > 0, (tbl["dy"] - tbl["mean"]) / tbl["std"], np.nan)
-    return tbl
-
-def get_dy_z_at(tbl, date):
-    """해당 연/월의 (배당수익률, Z-Score). 없으면 (nan, nan)."""
-    if tbl is None or tbl.empty:
-        return np.nan, np.nan
-    d = pd.Timestamp(date)
-    if d.tz is not None:
-        d = d.tz_localize(None)
-    m = tbl[(tbl.index.year == d.year) & (tbl.index.month == d.month)]
-    if m.empty:
-        return np.nan, np.nan
-    r = m.iloc[-1]
-    return float(r["dy"]), float(r["z"])
-
-def dy_signal_is_attack(dy, z, cfg=DEFAULT_DY_CFG):
-    """전략 C 공격/방어 판정 (단일 진입점). Z 산출 불가 시 고정 기준선으로 대체."""
-    if cfg[0] == "zscore" and pd.notna(z):
-        return bool(z > cfg[2])
-    return bool(dy > cfg[3])
-
-def summarize_bt_c(bt):
-    """백테스트 결과(DataFrame) 핵심 지표 요약 (월 수익률 기준)."""
+def summarize_bt_mix(bt):
+    """혼합전략 요약: 수익/위험 지표 + 집중도(단일 자산 최대 비중), 안전장치 발동 횟수."""
     if bt is None or len(bt) == 0:
         return None
     r = bt["monthly_return"].values / 100.0
     n = len(r)
     nav = bt["nav"].values
     sd = r.std(ddof=1) if n > 1 else np.nan
+    allocs = list(bt["alloc"])
+    max_w = [max([w for t, w in a.items() if t != "CASH (현금)"] or [0.0]) for a in allocs]
+    cash_w = [a.get("CASH (현금)", 0.0) for a in allocs]
+    turn = []
+    for prev, cur in zip(allocs[:-1], allocs[1:]):
+        keys = set(prev) | set(cur)
+        turn.append(0.5 * sum(abs(cur.get(k, 0.0) - prev.get(k, 0.0)) for k in keys))
+    modes = bt["mode"].astype(str)
     return {
         "CAGR (%)": ((nav[-1] / 100.0) ** (12.0 / n) - 1) * 100,
         "MDD (%)": float(bt["drawdown"].min()),
         "연변동성 (%)": sd * np.sqrt(12) * 100 if pd.notna(sd) else np.nan,
         "샤프": (r.mean() * 12) / (sd * np.sqrt(12)) if pd.notna(sd) and sd > 0 else np.nan,
-        "공격 비율 (%)": float(bt["mode"].astype(str).str.startswith("공격").mean() * 100),
-        "현금 비율 (%)": float(bt["weights_str"].astype(str).str.contains("CASH").mean() * 100),
-        "신호 전환 (회)": int((bt["mode"] != bt["mode"].shift()).sum() - 1),
-        "최종 NAV": float(nav[-1]),
+        "최악 월 (%)": float(r.min() * 100),
+        "단일자산 최대비중 (%)": float(np.max(max_w)),
+        "평균 현금 (%)": float(np.mean(cash_w)),
+        "연 턴오버 (%)": float(np.mean(turn) * 12) if turn else 0.0,
+        "Cap 발동 (월)": int(modes.str.contains("Cap적용").sum()),
+        "손절 발동 (월)": int(modes.str.contains("월중손절").sum()),
         "개월 수": n,
     }
-
-# ============================================================
-# [2단계 개선] 전략 B 모멘텀 평활화 + 변동성 타깃팅
-#  적용 여부·수치는 화면의 '⚙️ 전략 B 모멘텀·변동성 설정' 패널에서 바꿉니다. (기본값: 기존 방식)
-#  cfg = (weight_mode, vol_on, vol_window_months, vol_target_pct)
-#  - weight_mode: "orig" 12-4-2-1 / "mild" 4-3-2-1 / "equal" 1-1-1-1  (각각 1M·3M·6M·12M 가중)
-#  - 변동성 타깃팅: 공격 모드에서 선택한 자산의 최근 N개월 월수익률 변동성(연환산)을 재서
-#    비중 = min(100%, 타깃 ÷ 실현변동성), 나머지는 현금. (레버리지 확대 없음)
-# ============================================================
-DEFAULT_B_CFG = ("orig", False, 6, 35.0)
-B_WEIGHTS = {"orig": (12, 4, 2, 1), "mild": (4, 3, 2, 1), "equal": (1, 1, 1, 1)}
-B_WEIGHT_LABELS = {"orig": "기존 12-4-2-1", "mild": "완화 4-3-2-1", "equal": "균등 1-1-1-1"}
-B_CFG = DEFAULT_B_CFG  # 화면 설정 패널에서 덮어씀
-
-def calc_b_score(r1, r3, r6, r12, mode="orig"):
-    w = B_WEIGHTS.get(mode, B_WEIGHTS["orig"])
-    return (w[0] * r1 + w[1] * r3 + w[2] * r6 + w[3] * r12) / float(sum(w))
-
-def calc_vol_scaled_weight(closes, cfg):
-    """월말 종가 시퀀스(마지막이 현재) → (투자 비중 %, 실현변동성 % 또는 nan). 변동성 타깃팅이 꺼져 있으면 (100, nan)."""
-    if not cfg[1]:
-        return 100.0, np.nan
-    arr = np.asarray(list(closes)[-(int(cfg[2]) + 1):], dtype=float)
-    if len(arr) < 4 or np.any(arr <= 0) or np.any(np.isnan(arr)):
-        return 100.0, np.nan
-    rets = arr[1:] / arr[:-1] - 1
-    vol = rets.std(ddof=1) * np.sqrt(12) * 100
-    if not (vol > 0):
-        return 100.0, np.nan
-    return float(min(100.0, cfg[3] / vol * 100.0)), float(vol)
-
-def summarize_bt_b(bt):
-    """전략 B 요약: C 요약 지표 + 평균 투자 비중, 연 턴오버."""
-    sm = summarize_bt_c(bt)
-    if sm is None:
-        return None
-    allocs = list(bt["alloc"])
-    inv = [sum(w for t, w in a.items() if t != "CASH (현금)") for a in allocs]
-    sm["평균 투자 비중 (%)"] = float(np.mean(inv))
-    turn = []
-    for prev, cur in zip(allocs[:-1], allocs[1:]):
-        keys = set(prev) | set(cur)
-        turn.append(0.5 * sum(abs(cur.get(k, 0.0) - prev.get(k, 0.0)) for k in keys))
-    sm["연 턴오버 (%)"] = float(np.mean(turn) * 12) if turn else 0.0
-    return sm
 
 # ============================================================
 # 전략 A 실시간 백테스트 엔진 (TIP 11M 이동평균 카나리아 + 공격 Top4/방어 Top1 로테이션)
@@ -356,7 +261,7 @@ def run_backtest_strategy_a_full(monthly_px):
 # 전략 B 실시간 백테스트 엔진 (TIP 1-3-6-9-12M 모멘텀 카나리아 + 레버리지 몰빵)
 # ============================================================
 @st.cache_data(ttl=3600)
-def run_backtest_strategy_b_full(monthly_px, b_cfg=DEFAULT_B_CFG):
+def run_backtest_strategy_b_full(monthly_px):
     records = []
     nav = 100.0
     peak = 100.0
@@ -378,15 +283,11 @@ def run_backtest_strategy_b_full(monthly_px, b_cfg=DEFAULT_B_CFG):
                 if t in monthly_px.columns:
                     rets = calc_momentum_a(monthly_px[t], i, [1, 3, 6, 12])
                     if not np.isnan(rets[12]):
-                        score = calc_b_score(rets[1], rets[3], rets[6], rets[12], b_cfg[0])
+                        score = (12 * rets[1] + 4 * rets[3] + 2 * rets[6] + rets[12]) / 19
                         scores.append((t, score))
             if scores:
                 scores.sort(key=lambda x: x[1], reverse=True)
-                top_b = scores[0][0]
-                vol_w, _vol = calc_vol_scaled_weight(monthly_px[top_b].iloc[max(0, i - int(b_cfg[2])):i + 1].tolist(), b_cfg)
-                alloc[top_b] = vol_w
-                if vol_w < 99.999:
-                    alloc["CASH (현금)"] = 100.0 - vol_w
+                alloc[scores[0][0]] = 100.0
             else:
                 alloc["CASH (현금)"] = 100.0
         else:
@@ -424,7 +325,7 @@ def run_backtest_strategy_b_full(monthly_px, b_cfg=DEFAULT_B_CFG):
             "nav": nav,
             "monthly_return": port_ret * 100,
             "drawdown": dd,
-            "weights_str": ", ".join([f"{t} {round(w, 1)}%" for t, w in alloc.items() if w > 0]),
+            "weights_str": ", ".join([f"{t} {w}%" for t, w in alloc.items() if w > 0]),
             "alloc": dict(alloc),
         })
 
@@ -444,27 +345,23 @@ def get_spy_dividend_history():
         return pd.Series(dtype=float)
 
 @st.cache_data(ttl=3600)
-def run_backtest_strategy_c_full(monthly_px, spy_divs, dy_cfg=DEFAULT_DY_CFG):
+def run_backtest_strategy_c_full(monthly_px, spy_divs):
     records = []
     nav = 100.0
     peak = 100.0
     monthly_returns = monthly_px.pct_change().shift(-1)
-    dy_tbl = get_spy_dy_table(dy_cfg[1]) if dy_cfg[0] in ("zscore", "fixed_raw") else pd.DataFrame()
 
     for i in range(11, len(monthly_px) - 1):
         if "SPY" not in monthly_px.columns:
             break
         date = monthly_px.index[i]
-        dy, dy_z = get_dy_z_at(dy_tbl, date)
-        if pd.isna(dy):  # 테이블 조회 실패 시 기존 방식(조정가 기반)으로 대체
-            window_start = date - pd.Timedelta(days=365)
-            div_sum = spy_divs[(spy_divs.index > window_start) & (spy_divs.index <= date)].sum()
-            spy_price = monthly_px["SPY"].iloc[i]
-            if pd.isna(spy_price) or spy_price <= 0 or div_sum <= 0:
-                continue
-            dy = (div_sum / spy_price) * 100
-            dy_z = np.nan
-        is_attack = dy_signal_is_attack(dy, dy_z, dy_cfg)
+        window_start = date - pd.Timedelta(days=365)
+        div_sum = spy_divs[(spy_divs.index > window_start) & (spy_divs.index <= date)].sum()
+        spy_price = monthly_px["SPY"].iloc[i]
+        if pd.isna(spy_price) or spy_price <= 0 or div_sum <= 0:
+            continue
+        dy = (div_sum / spy_price) * 100
+        is_attack = dy > 1.33
 
         alloc = {}
         if is_attack:
@@ -516,8 +413,6 @@ def run_backtest_strategy_c_full(monthly_px, spy_divs, dy_cfg=DEFAULT_DY_CFG):
             "monthly_return": port_ret * 100,
             "drawdown": dd,
             "weights_str": ", ".join([f"{t} {w}%" for t, w in alloc.items() if w > 0]),
-            "dy": dy,
-            "dy_z": dy_z,
             "alloc": dict(alloc),
         })
 
@@ -527,10 +422,10 @@ def run_backtest_strategy_c_full(monthly_px, spy_divs, dy_cfg=DEFAULT_DY_CFG):
 # 2026 혼합전략 백테스트 엔진 (전략A + 전략B + 전략C 각 33.33% 동일비중 혼합)
 # ============================================================
 @st.cache_data(ttl=3600)
-def run_backtest_strategy_mix_full(monthly_px, spy_divs, dy_cfg=DEFAULT_DY_CFG, b_cfg=DEFAULT_B_CFG):
+def run_backtest_strategy_mix_full(monthly_px, spy_divs):
     bt_a = run_backtest_strategy_a_full(monthly_px)
-    bt_b = run_backtest_strategy_b_full(monthly_px, b_cfg=b_cfg)
-    bt_c = run_backtest_strategy_c_full(monthly_px, spy_divs, dy_cfg=dy_cfg)
+    bt_b = run_backtest_strategy_b_full(monthly_px)
+    bt_c = run_backtest_strategy_c_full(monthly_px, spy_divs)
 
     if bt_a.empty or bt_b.empty or bt_c.empty:
         return pd.DataFrame()
@@ -587,26 +482,19 @@ def run_backtest_strategy_mix_full(monthly_px, spy_divs, dy_cfg=DEFAULT_DY_CFG, 
 #   - 1단계 개선: 단일 자산군 비중 상한(Cap)
 #     3개 전략(각 33.33%)을 합산했을 때 특정 티커의 최종 비중이 상한(기본 25%)을 넘으면
 #     초과분을 현금(CASH)으로 자동 전환하여 강제 분산시킵니다.
-#   - 2단계 개선: 전략 B 변동성 동적 조절
-#     리밸런싱 결정 시점(전월 말)의 VIX가 임계치(기본 25)를 초과하면, 전략 B의 레버리지 공격
-#     자산(TYD/UPRO/VNQ) 비중을 100%에서 50%로 줄이고 나머지 50%를 현금으로 전환합니다.
-#   - 3단계 개선: 월중 하드스탑(Intra-month Stop-loss)
+#   - 2단계 개선: 월중 하드스탑(Intra-month Stop-loss)
 #     일별 가격으로 월중 누적 손실을 감시하다가, 포트폴리오가 월초(전월 말 종가) 대비 임계치
 #     (기본 -7%)까지 하락하면 그 시점 이후 월말까지 전량 현금화한 것으로 간주해 추가 손실을 차단합니다.
-#   - (4단계: 상관관계 기반 필터링은 이후 단계에서 순차 적용 예정)
 # ============================================================
 @st.cache_data(ttl=3600)
 def run_backtest_strategy_mix_improved_full(
     monthly_px, spy_divs, daily_px=None,
     apply_cap=False, weight_cap=25.0,
-    apply_vix_dampening=False, vix_threshold=25.0,
     apply_stop_loss=False, stop_loss_pct=-7.0,
-    dy_cfg=DEFAULT_DY_CFG,
-    b_cfg=DEFAULT_B_CFG,
 ):
     bt_a = run_backtest_strategy_a_full(monthly_px)
-    bt_b = run_backtest_strategy_b_full(monthly_px, b_cfg=b_cfg)
-    bt_c = run_backtest_strategy_c_full(monthly_px, spy_divs, dy_cfg=dy_cfg)
+    bt_b = run_backtest_strategy_b_full(monthly_px)
+    bt_c = run_backtest_strategy_c_full(monthly_px, spy_divs)
 
     if bt_a.empty or bt_b.empty or bt_c.empty:
         return pd.DataFrame()
@@ -621,8 +509,6 @@ def run_backtest_strategy_mix_improved_full(
 
     monthly_returns = monthly_px.pct_change().shift(-1)
     monthly_idx = monthly_px.index
-    has_vix = "^VIX" in monthly_px.columns
-    offensive_b_set = set(OFFENSIVE_B)
     can_stop_loss = apply_stop_loss and daily_px is not None
 
     records = []
@@ -641,24 +527,6 @@ def run_backtest_strategy_mix_improved_full(
         # d는 "수익이 실현되는 시점"이므로, 그 직전 월(pos-1)이 리밸런싱 결정 시점
         decision_pos = pos - 1 if pos > 0 else None
         decision_date = monthly_idx[decision_pos] if decision_pos is not None else None
-
-        # --- 2단계 개선 로직: 전략 B 변동성 동적 조절 (결정 시점 VIX 확인) ---
-        vol_note = ""
-        if apply_vix_dampening and has_vix and decision_pos is not None:
-            vix_val = monthly_px["^VIX"].iloc[decision_pos]
-            if pd.notna(vix_val) and vix_val > vix_threshold:
-                new_alloc_b = {}
-                changed = False
-                for t, w in alloc_b.items():
-                    if t in offensive_b_set:
-                        new_alloc_b[t] = new_alloc_b.get(t, 0.0) + w * 0.5
-                        new_alloc_b["CASH (현금)"] = new_alloc_b.get("CASH (현금)", 0.0) + w * 0.5
-                        changed = True
-                    else:
-                        new_alloc_b[t] = new_alloc_b.get(t, 0.0) + w
-                if changed:
-                    alloc_b = new_alloc_b
-                    vol_note = " ⚡VIX완화"
 
         # --- 3개 전략(각 33.33%) 결합 ---
         combined_alloc = {}
@@ -695,7 +563,7 @@ def run_backtest_strategy_mix_improved_full(
                     if pd.notna(r):
                         port_ret += (w / 100.0) * r
 
-        # --- 3단계 개선 로직: 월중 하드스탑 (일별 가격으로 월중 낙폭 감시) ---
+        # --- 2단계 개선 로직: 월중 하드스탑 (일별 가격으로 월중 낙폭 감시) ---
         stop_note = ""
         if can_stop_loss and decision_date is not None:
             tickers_held = [t for t in final_alloc if t != "CASH (현금)" and final_alloc[t] > 0.01 and t in daily_px.columns]
@@ -727,7 +595,7 @@ def run_backtest_strategy_mix_improved_full(
         mode_a_short = bt_a.loc[d, "mode"].split(" ")[0]
         mode_b_short = bt_b.loc[d, "mode"].split(" ")[0]
         mode_c_short = bt_c.loc[d, "mode"].split(" ")[0]
-        mode_str = f"A:{mode_a_short} / B:{mode_b_short} / C:{mode_c_short}{vol_note}{cap_note}{stop_note}"
+        mode_str = f"A:{mode_a_short} / B:{mode_b_short} / C:{mode_c_short}{cap_note}{stop_note}"
         weights_str = ", ".join([f"{t} {w:.1f}%" for t, w in final_alloc.items() if w > 0.01])
 
         records.append({
@@ -1015,7 +883,7 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
 
         score_a_off = (r1 + r3 + r6 + r12) / 4
         score_a_def = (r1 + r3 + r6 + r9 + r12) / 5
-        score_b_off = calc_b_score(r1, r3, r6, r12, B_CFG[0])
+        score_b_off = (r1 * 12 + r3 * 4 + r6 * 2 + r12 * 1) / 19
         score_b_def_simple = (r1 + r3 + r6 + r9 + r12) / 5
 
         return {
@@ -1078,11 +946,7 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
                 off_scores.append((t, ticker_metrics[t]["B_공격스코어"]))
         if off_scores:
             off_scores.sort(key=lambda x: x[1], reverse=True)
-            _top_bh = off_scores[0][0]
-            _w_bh, _ = calc_vol_scaled_weight(monthly_prices[_top_bh], B_CFG)
-            alloc_b_hist[_top_bh] = _w_bh
-            if _w_bh < 99.999:
-                alloc_b_hist["CASH (현금)"] = 100.0 - _w_bh
+            alloc_b_hist[off_scores[0][0]] = 100.0
         else:
             alloc_b_hist["CASH (현금)"] = 100.0
     else:
@@ -1102,13 +966,7 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
 
     # 3. 전략 C 배분 (이중 스케일링 버그 수정 완료)
     dy_val = 1.32
-    dy_z_hist = np.nan
-    _dy_tbl_h = get_spy_dy_table(DY_CFG[1]) if DY_CFG[0] in ("zscore", "fixed_raw") else pd.DataFrame()
-    _dy_h, _z_h = get_dy_z_at(_dy_tbl_h, target_date)
-    if pd.notna(_dy_h):
-        dy_val = float(_dy_h)
-        dy_z_hist = _z_h
-    elif not spy_divs.empty:
+    if not spy_divs.empty:
         target_date_naive = target_date.tz_localize(None) if target_date.tz is not None else target_date
         start_dt = target_date_naive - pd.Timedelta(days=365)
         
@@ -1123,7 +981,7 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
         if spy_price and spy_price > 0:
             dy_val = float((sum_divs / spy_price) * 100)
         
-    is_attack_c_hist = dy_signal_is_attack(dy_val, dy_z_hist, DY_CFG)
+    is_attack_c_hist = dy_val > 1.33
 
     alloc_c_hist = {}
     if is_attack_c_hist:
@@ -1190,53 +1048,8 @@ else:
     is_attack_b = tip_score_b > 0
 
     # S&P 500 실시간 배당수익률 산출 및 시그널 매핑
-    # ---- 전략 C 배당 신호 설정 (1단계 개선 적용 여부 / 수치) ----
-    with st.expander("⚙️ 전략 C 배당 신호 설정 (1단계 개선 적용 여부)", expanded=False):
-        _mode_lbl = st.radio(
-            "전략 C 카나리아 방식",
-            ["기존 고정 기준선", "동적 Z-Score (1단계 개선)"],
-            index=0, horizontal=True, key="dy_mode_radio",
-        )
-        _cz1, _cz2, _cz3 = st.columns(3)
-        _z_window = _cz1.selectbox("롤링 기간 (개월)", [24, 36, 48, 60], index=1, key="dy_z_window")
-        _z_thr = _cz2.number_input("Z 임계값 (초과 시 공격)", min_value=-2.0, max_value=2.0, value=-0.5, step=0.05, key="dy_z_thr")
-        _fixed_thr = _cz3.number_input("고정 기준선 (%)", min_value=0.5, max_value=3.0, value=1.33, step=0.01, key="dy_fixed_thr")
-        st.caption("이 설정은 실시간 신호, 과거 월말 포트폴리오, 혼합전략·전략 C 백테스트에 모두 적용됩니다. 전/후 성과 비교와 수치 민감도는 '🔄 전략 C' 탭에 있습니다.")
-    DY_CFG = (
-        "zscore" if _mode_lbl.startswith("동적") else "fixed",
-        int(_z_window), float(_z_thr), float(_fixed_thr),
-    )
-
-    # ---- 전략 B 모멘텀·변동성 설정 (2단계 개선 적용 여부 / 수치) ----
-    with st.expander("⚙️ 전략 B 모멘텀·변동성 설정 (2단계 개선 적용 여부)", expanded=False):
-        _bw_lbl = st.radio(
-            "공격 모멘텀 가중치 (1M-3M-6M-12M)",
-            [B_WEIGHT_LABELS["orig"], B_WEIGHT_LABELS["mild"], B_WEIGHT_LABELS["equal"]],
-            index=0, horizontal=True, key="b_weight_radio",
-        )
-        _bv_on = st.checkbox("변동성 타깃팅 적용 (공격 모드 비중 축소)", value=False, key="b_vol_on")
-        _bc1, _bc2 = st.columns(2)
-        _bv_win = _bc1.selectbox("실현변동성 계산 기간 (개월)", [3, 6, 12], index=1, key="b_vol_window")
-        _bv_tgt = _bc2.number_input("타깃 변동성 (연 %)", min_value=10.0, max_value=100.0, value=35.0, step=5.0, key="b_vol_target")
-        st.caption("설정은 실시간 신호, 과거 월말 포트폴리오, 혼합전략·전략 B 백테스트에 모두 적용됩니다. 전/후 성과 비교와 민감도는 '⚡ 전략 B' 탭에 있습니다.")
-    _bw_mode = [k for k, v in B_WEIGHT_LABELS.items() if v == _bw_lbl][0]
-    B_CFG = (_bw_mode, bool(_bv_on), int(_bv_win), float(_bv_tgt))
-
-    if B_CFG[0] != "orig":  # 실시간 B 공격 스코어를 선택한 가중치로 재계산
-        df_all["B_공격스코어"] = df_all.apply(
-            lambda r: round(calc_b_score(r["1M"], r["3M"], r["6M"], r["12M"], B_CFG[0]), 2), axis=1)
-        data_dict = df_all.set_index("Ticker").to_dict(orient="index")
-
     realtime_dy = get_sp500_dividend_yield()
-    _dy_tbl_live = get_spy_dy_table(DY_CFG[1]) if DY_CFG[0] == "zscore" else pd.DataFrame()
-    dy_z_live = float(_dy_tbl_live["z"].iloc[-1]) if (not _dy_tbl_live.empty and pd.notna(_dy_tbl_live["z"].iloc[-1])) else np.nan
-    is_attack_c = dy_signal_is_attack(realtime_dy, dy_z_live, DY_CFG)
-    if DY_CFG[0] == "zscore" and pd.notna(dy_z_live):
-        dy_basis = f"Z-Score {dy_z_live:+.2f} (배당수익률 {realtime_dy:.2f}%)"
-        dy_cut = f"{DY_CFG[2]:+.2f}"
-    else:
-        dy_basis = f"배당수익률 {realtime_dy:.2f}%"
-        dy_cut = f"{DY_CFG[3]:.2f}%"
+    is_attack_c = realtime_dy > 1.33
     
     tab_2026, tab_a, tab_b, tab_c, tab_rank, tab_calc = st.tabs([
         "🏆 2026 혼합전략", 
@@ -1285,17 +1098,12 @@ else:
 
     # [전략 B 할당 산출]
     alloc_b = {}
-    b_vol_info = None
     if is_attack_b:
         df_off_b = df_all[df_all["Ticker"].isin(OFFENSIVE_B)].copy()
         if not df_off_b.empty:
             df_off_b = df_off_b.sort_values(by="B_공격스코어", ascending=False)
             top_1_b = df_off_b.iloc[0]
-            _w_b, _vol_b = calc_vol_scaled_weight(top_1_b["raw_closes"], B_CFG)
-            alloc_b[top_1_b["Ticker"]] = _w_b
-            if _w_b < 99.999:
-                alloc_b["CASH (현금)"] = 100.0 - _w_b
-            b_vol_info = (top_1_b["Ticker"], _vol_b, _w_b)
+            alloc_b[top_1_b["Ticker"]] = 100.0
         else:
             alloc_b["CASH (현금)"] = 100.0
     else:
@@ -1368,7 +1176,7 @@ else:
         st.header("🏆 2026년 혼합 전략")
         st.markdown(
             "안정 지향의 **전략 A**, 고수익 레버리지의 **전략 B**, 시황 로테이션인 **전략 C**를 "
-            "각각 **$33.33\%$씩 동일 비중**으로 혼합하여 시장 전반의 변동성을 완벽하게 제어하는 2026년 추천 전략 모델입니다."
+            "각각 **$33.33\\%$씩 동일 비중**으로 혼합하여 시장 전반의 변동성을 완벽하게 제어하는 2026년 추천 전략 모델입니다."
         )
 
         with st.expander("📖 2026 동적 자산배분 혼합 전략 명세서 (작동원칙)", expanded=False):
@@ -1395,7 +1203,7 @@ else:
 
             #### 🔄 전략 C: 배당 기반 섹터 로테이션 (배분 비중 33.33%)
             S&P 500의 실시간 배당수익률을 기반으로 주식 저평가/과열 국면을 판독합니다.
-            * **카나리아**: SPY 배당수익률 — 기본은 고정 기준선(1.33%) 초과 시 공격. '⚙️ 전략 C 배당 신호 설정'에서 롤링 Z-Score 방식(예: 36개월, -0.5 초과 시 공격)으로 전환 가능
+            * **카나리아**: SPY 실시간 배당수익률 — 1.33% 초과면 공격, 이하면 방어
             * **공격 자산군 (7개)**: `FDN, LIT, SMH, XLE, IGV, QQQM, XLU`
             * **방어 자산군 (5개)**: `GLD, PDBC, OILK, SHY, TLT`
             * **운용 가이드**: 공격 시 1·3·6·12개월 단순평균 모멘텀 1위 섹터에 100% 투자. 방어 시 1·3·6·9·12개월 단순평균 모멘텀 1위 자산에 투자하되, 그 스코어마저 0 이하면 현금 100%로 대피.
@@ -1408,20 +1216,17 @@ else:
             $$\\text{Defensive Momentum} = \\frac{R_1 + R_3 + R_6 + R_9 + R_{12}}{5}$$
             3. **가중 평균 모멘텀 스코어** (전략 B 공격형): 레버리지 특성상 최근 수익률에 높은 가중치 부여
             $$\\text{Weighted Momentum} = \\frac{12R_1 + 4R_3 + 2R_6 + R_{12}}{19}$$
-            ※ 위는 기존(기본) 공식입니다. '⚙️ 전략 B 모멘텀·변동성 설정'에서 완화(4-3-2-1)·균등(1-1-1-1) 가중과 변동성 타깃팅을 선택할 수 있습니다.
 
             #### 🔁 리밸런싱 프로세스
             1. **카나리아 모니터링**: 매월 말 TIP 가격·모멘텀과 S&P 500 배당수익률을 통해 각 전략의 공격/방어 신호를 산출합니다.
             2. **전략별 자산 확정**: 전략 A는 모멘텀 상위 4자산(공격) 또는 1자산(방어), 전략 B·C는 각각 상위 1자산을 선정합니다.
             3. **동일비중 결합**: 세 전략의 산출 비중을 각 33.33%씩 환산·합산하여 매월 리밸런싱을 실행합니다.
 
-            #### 🛡️ MDD 개선 로드맵 (단계적 적용 중)
+            #### 🛡️ MDD 개선 장치 (선택 적용)
             2019년 5월 무역전쟁 급락 당시 -13.0%의 최대 낙폭(MDD)이 발생한 원인을 분석한 결과, 3개 전략이 독립적으로 신호를 계산하다 보니
-            SMH(41.66%)·UPRO(33.33%) 등 특정 자산·섹터에 비중이 중복 쏠리는 현상이 핵심 원인으로 확인되었습니다. 아래 4가지 개선안을 단계적으로 적용합니다.
-            - ✅ **1단계 (적용 가능)**: 단일 자산군 비중 상한(Cap 25%) — 아래 백테스트 성과 분석 섹션의 체크박스로 지금 바로 켜고 끄며 비교할 수 있습니다.
-            - ✅ **2단계 (적용 가능)**: 전략 B 변동성 동적 조절 — 리밸런싱 결정 시점 VIX가 25 초과 시 레버리지(TYD/UPRO/VNQ) 비중을 절반으로 축소, 역시 체크박스로 On/Off 가능합니다.
-            - ✅ **3단계 (적용 가능)**: 월중 하드스탑(Intra-month Stop-loss) — 월중 낙폭이 -7%에 도달하면 즉시 현금화, 체크박스로 On/Off 가능합니다.
-            - ⏳ **4단계 (예정)**: 상관관계 기반 필터링 — 공격 자산 후보가 특정 섹터로만 쏠리지 않도록 로직 보완
+            SMH(41.66%)·UPRO(33.33%) 등 특정 자산·섹터에 비중이 중복 쏠리는 현상이 핵심 원인으로 확인되었습니다. 아래 2가지 개선 장치를 선택적으로 적용할 수 있습니다.
+            - ✅ **비중 상한 (적용 가능)**: 단일 자산군 비중 상한(Cap 25%) — 아래 백테스트 성과 분석 섹션의 체크박스로 지금 바로 켜고 끄며 비교할 수 있습니다.
+            - ✅ **월중 하드스탑 (적용 가능)**: 월중 하드스탑(Intra-month Stop-loss) — 월중 낙폭이 -7%에 도달하면 즉시 현금화, 체크박스로 On/Off 가능합니다.
 
             > 실제 장기 성과(CAGR, MDD, 연도별/월별 수익률 등)는 아래 **🛑 2026 혼합전략 백테스트 성과 분석** 섹션에서 야후 파이낸스 실시간 데이터를 기반으로 항상 최신 상태로 자동 계산됩니다.
             """)
@@ -1430,7 +1235,7 @@ else:
         c_sig1, c_sig2, c_sig3 = st.columns(3)
         c_sig1.metric("전략A (TIP 비율)", f"{tip_ratio:.3f}", "공격" if is_attack_a else "방어", delta_color="inverse" if not is_attack_a else "normal")
         c_sig2.metric("전략B (TIP 모멘텀)", f"{tip_score_b:.2f}%", "공격" if is_attack_b else "방어", delta_color="inverse" if not is_attack_b else "normal")
-        c_sig3.metric("전략C (배당 Z-Score)" if DY_CFG[0] == "zscore" and pd.notna(dy_z_live) else "전략C (배당수익률)", f"{dy_z_live:+.2f}" if DY_CFG[0] == "zscore" and pd.notna(dy_z_live) else f"{realtime_dy:.2f}%", "공격" if is_attack_c else "방어", delta_color="inverse" if not is_attack_c else "normal")
+        c_sig3.metric("전략C (배당수익률)", f"{realtime_dy:.2f}%", "공격" if is_attack_c else "방어", delta_color="inverse" if not is_attack_c else "normal")
 
         st.markdown("### 📊 포트폴리오 비중 분배 현황")
         chart_col, table_col = st.columns([5, 5])
@@ -1589,38 +1394,33 @@ else:
             )
             bt_start_mix = bt_start_label_mix.split(" ")[0]
             st.markdown("**🛡️ MDD 개선 로직 (단계별 적용 — 개별 On/Off 가능)**")
+            _mc1, _mc2 = st.columns(2)
+            mix_cap = _mc1.number_input("비중 상한 (%)", min_value=10.0, max_value=50.0, value=25.0, step=1.0, key="mix_cap_pct")
+            mix_stop = _mc2.number_input("월중 하드스탑 (%)", min_value=-20.0, max_value=-1.0, value=-7.0, step=0.5, key="mix_stop_pct")
             apply_cap_mix = st.checkbox(
-                "1단계: 단일 자산군 비중 상한(Cap 25%) 적용",
+                f"비중 상한: 단일 자산군 비중 상한(Cap {mix_cap:.0f}%) 적용",
                 value=False,
                 key="apply_cap_mix",
                 help="2019년 5월 무역전쟁 급락 시 SMH(41.66%)·UPRO(33.33%) 등 특정 자산에 3개 전략 비중이 겹치며 MDD가 커졌던 문제를 보완합니다. "
-                     "3개 전략을 합산했을 때 단일 티커 비중이 25%를 넘으면 초과분을 현금으로 자동 전환합니다."
-            )
-            apply_vix_mix = st.checkbox(
-                "2단계: 전략 B 변동성 동적 조절 (VIX 임계치 초과 시 레버리지 비중 절반 축소)",
-                value=False,
-                key="apply_vix_mix",
-                help="리밸런싱 결정 시점(전월 말)의 VIX가 25를 초과하면, 전략 B의 레버리지 공격 자산(TYD/UPRO/VNQ) 비중을 "
-                     "100%에서 50%로 줄이고 나머지 50%를 현금으로 전환합니다. 시장이 이미 불안한 상태에서 몰빵 리스크를 낮춥니다."
+                     "3개 전략을 합산했을 때 단일 티커 비중이 위에서 설정한 상한을 넘으면 초과분을 현금으로 자동 전환합니다."
             )
             apply_stop_mix = st.checkbox(
-                "3단계: 월중 하드스탑 (월중 낙폭 -7% 도달 시 즉시 현금화)",
+                f"월중 하드스탑: 월중 낙폭 {mix_stop:.1f}% 도달 시 즉시 현금화",
                 value=False,
                 key="apply_stop_mix",
                 help="월말 리밸런싱만으로는 2019년 5월 무역전쟁 급락 같은 월중 기습 악재에 대응할 수 없었던 한계를 보완합니다. "
-                     "일별 가격으로 월중 누적 손실을 감시하다가 월초(전월 말) 대비 -7%까지 하락하면, 그 시점 이후 월말까지 전량 현금 보유로 간주해 추가 손실을 차단합니다."
+                     "일별 가격으로 월중 누적 손실을 감시하다가 월초(전월 말) 대비 설정한 낙폭까지 하락하면, 그 시점 이후 월말까지 전량 현금 보유로 간주해 추가 손실을 차단합니다."
             )
-            st.caption("(4단계: 상관관계 기반 필터링은 다음 단계에서 순차 적용 예정)")
             st.caption("선택한 시작일 기준으로 2026 혼합전략(전략A+B+C 33.33%씩) 백테스트 시뮬레이션이 즉시 재계산됩니다.")
             st.markdown('</div>', unsafe_allow_html=True)
 
-        use_improved_mix = apply_cap_mix or apply_vix_mix or apply_stop_mix
+        use_improved_mix = apply_cap_mix or apply_stop_mix
 
         with st.spinner("2026 혼합전략 실시간 백테스트 엔진 구동 중... (전략 A+B+C 통합 연산)"):
             try:
                 bt_tickers_mix = sorted(set(
                     OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C
-                    + ["TIP", "SPY", "QQQ", "^VIX"]
+                    + ["TIP", "SPY", "QQQ"]
                 ))
                 daily_px_mix = get_daily_price_history_a(bt_tickers_mix, start=bt_start_mix)
                 monthly_px_mix = to_monthly_last_a(daily_px_mix)
@@ -1628,13 +1428,11 @@ else:
                 if use_improved_mix:
                     bt_results_mix = run_backtest_strategy_mix_improved_full(
                         monthly_px_mix, spy_divs_mix, daily_px=daily_px_mix,
-                        apply_cap=apply_cap_mix, weight_cap=25.0,
-                        apply_vix_dampening=apply_vix_mix, vix_threshold=25.0,
-                        apply_stop_loss=apply_stop_mix, stop_loss_pct=-7.0,
-                        dy_cfg=DY_CFG, b_cfg=B_CFG,
+                        apply_cap=apply_cap_mix, weight_cap=mix_cap,
+                        apply_stop_loss=apply_stop_mix, stop_loss_pct=mix_stop,
                     )
                 else:
-                    bt_results_mix = run_backtest_strategy_mix_full(monthly_px_mix, spy_divs_mix, dy_cfg=DY_CFG, b_cfg=B_CFG)
+                    bt_results_mix = run_backtest_strategy_mix_full(monthly_px_mix, spy_divs_mix)
                 bt_ok_mix = len(bt_results_mix) > 0
             except Exception as e:
                 st.error(f"2026 혼합전략 백테스트 데이터 로딩 중 오류가 발생했습니다: {e}")
@@ -1647,11 +1445,9 @@ else:
             if use_improved_mix:
                 applied_stages = []
                 if apply_cap_mix:
-                    applied_stages.append("1단계(비중상한)")
-                if apply_vix_mix:
-                    applied_stages.append("2단계(VIX완화)")
+                    applied_stages.append("비중상한")
                 if apply_stop_mix:
-                    applied_stages.append("3단계(월중손절)")
+                    applied_stages.append("월중손절")
                 st.success(f"🛡️ [개선판] {' + '.join(applied_stages)} 로직이 적용된 결과입니다. 체크박스를 해제하면 기존 로직과 바로 비교할 수 있습니다.")
 
             total_days_mix = (bt_results_mix["date"].iloc[-1] - bt_results_mix["date"].iloc[0]).days
@@ -1990,6 +1786,35 @@ else:
             st.caption(f"※ 기간: {bt_results_mix['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_mix['date'].iloc[-1].strftime('%Y-%m')} 야후 파이낸스 실시간 데이터 기준. 1/3/5년 지표는 해당 기간의 월 데이터가 충분할 때만 표시됩니다.")
 
 
+
+            st.markdown("---")
+            st.markdown("### 🔬 MDD 안전장치 전/후 비교 (비중 상한 · 월중 하드스탑)")
+            st.caption(f"같은 기간·같은 전략에서 안전장치만 바꿔 비교합니다. 상한 {mix_cap:.0f}% · 하드스탑 {mix_stop:.1f}%는 위 설정값입니다.")
+
+            def _run_mix(cap=None, stop=None):
+                return run_backtest_strategy_mix_improved_full(
+                    monthly_px_mix, spy_divs_mix, daily_px=(daily_px_mix if stop is not None else None),
+                    apply_cap=cap is not None, weight_cap=cap if cap is not None else 25.0,
+                    apply_stop_loss=stop is not None, stop_loss_pct=stop if stop is not None else -7.0,
+                )
+
+            _mix_cases = {
+                "① 안전장치 없음": {},
+                f"② 상한 {mix_cap:.0f}%만": {"cap": mix_cap},
+                f"③ 하드스탑 {mix_stop:.1f}%만": {"stop": mix_stop},
+                "④ 상한 + 하드스탑": {"cap": mix_cap, "stop": mix_stop},
+            }
+            _mix_res = {k: _run_mix(**v) for k, v in _mix_cases.items()}
+            _mix_rows = []
+            for _k, _bt in _mix_res.items():
+                _sm = summarize_bt_mix(_bt)
+                if _sm:
+                    _mix_rows.append({"방식": _k, **_sm})
+            if _mix_rows:
+                st.dataframe(pd.DataFrame(_mix_rows).round(2), use_container_width=True, hide_index=True)
+                st.caption("안전장치는 MDD·최악의 달을 줄이는 대신 평상시 CAGR·샤프를 깎습니다. '발동 (월)'은 실제로 개입한 횟수입니다.")
+                _nav_mix = pd.concat({_k.split(" ")[0]: _bt.set_index("date")["nav"] for _k, _bt in _mix_res.items() if len(_bt) > 0}, axis=1)
+                st.line_chart(_nav_mix)
 
             st.markdown("##### 🗓️ 월별 세부 리밸런싱 기록")
             display_bt_mix = bt_results_mix.copy()
@@ -2487,7 +2312,6 @@ else:
                 * 대상 자산: `TYD, UPRO, VNQ`
                 * 가중 모멘텀 스코어(최근 수익률에 높은 가중치 부여):
                 $$\\text{Weighted Momentum} = \\frac{12 R_1 + 4 R_3 + 2 R_6 + R_{12}}{19}$$
-                ※ 위는 기존(기본) 공식입니다. '⚙️ 전략 B 모멘텀·변동성 설정'에서 완화(4-3-2-1)·균등(1-1-1-1) 가중과 변동성 타깃팅을 선택할 수 있습니다.
                 * 행동: 스코어 **1위 자산**에 **100% 몰빵 투자**합니다. (컷오프 없음)
             * **방어 신호 (인버스/방어 자산 3개 중 선택)**
                 * 대상 자산: `DOG, RWM, TBF`
@@ -2502,7 +2326,7 @@ else:
 
         st.markdown(
             "**1단계: 카나리아 신호 판단** \n"
-            "TIP의 단순 모멘텀 스코어가 양수($> 0$)이면 공격, 음수($\le 0$)이면 방어 모드로 진입합니다."
+            "TIP의 단순 모멘텀 스코어가 양수($> 0$)이면 공격, 음수($\\le 0$)이면 방어 모드로 진입합니다."
         )
         col1_b, col2_b = st.columns(2)
         col1_b.metric("TIP 현재가", f"${tip_current:.2f}")
@@ -2514,23 +2338,18 @@ else:
             df_off_b = df_off_b.sort_values(by="B_공격스코어", ascending=False)
             
             st.write("**공격 자산 순위 (1-3-6-12M 가중 평균 모멘텀):**")
-            st.caption(f"현재 가중치 설정: {B_WEIGHT_LABELS[B_CFG[0]]} (1M·3M·6M·12M) — '⚙️ 전략 B 모멘텀·변동성 설정'에서 변경")
+            st.caption("가중치 공식: $\\frac{12 \\cdot R_1 + 4 \\cdot R_3 + 2 \\cdot R_6 + R_{12}}{19}$")
             st.dataframe(
                 df_off_b[["Ticker", "현재가", "1M", "3M", "6M", "12M", "B_공격스코어"]]
                 .rename(columns={"B_공격스코어": "가중 모멘텀 스코어"}),
                 use_container_width=True, hide_index=True
             )
             
-            st.subheader("🎯 최종 포트폴리오 가이드")
-            if B_CFG[1] and b_vol_info and pd.notna(b_vol_info[1]):
-                st.caption(f"변동성 타깃팅: {b_vol_info[0]} 최근 {B_CFG[2]}개월 실현변동성 {b_vol_info[1]:.1f}% → 타깃 {B_CFG[3]:.0f}% 기준 투자 비중 {b_vol_info[2]:.1f}% (나머지 현금)")
-            for t, w_b in alloc_b.items():
-                if t == "CASH (현금)":
-                    st.error(f"🚨 **현금(CASH) 보유 : 비중 {w_b:.1f}%**")
-                else:
-                    p = data_dict.get(t, {}).get("현재가", 0.0)
-                    sc = data_dict.get(t, {}).get("B_공격스코어", 0.0)
-                    st.info(f"🏆 **{t}** : 비중 **{w_b:.1f}%** (현재가: ${p:.2f}, 가중 모멘텀: {sc:.2f}%)")
+            st.subheader("🎯 최종 포트폴리오 가이드 (100% 집중 투자)")
+            for t, _ in alloc_b.items():
+                p = data_dict.get(t, {}).get("현재가", 0.0)
+                s = data_dict.get(t, {}).get("B_공격스코어", 0.0)
+                st.info(f"🏆 **{t}** : 비중 **100%** (현재가: ${p:.2f}, 가중 모멘텀: {s:.2f}%)")
         else:
             st.warning("🛡️ **현재 모드: 방어 자산 모드** - 인버스 자산을 활용하여 하락장에 방어 베팅합니다.")
             df_def_b = df_all[df_all["Ticker"].isin(DEFENSIVE_B)].copy()
@@ -2573,7 +2392,7 @@ else:
                 bt_tickers_b = sorted(set(OFFENSIVE_B + DEFENSIVE_B + ["TIP", "QQQ"]))
                 daily_px_b = get_daily_price_history_a(bt_tickers_b, start=bt_start_b)
                 monthly_px_b = to_monthly_last_a(daily_px_b)
-                bt_results_b = run_backtest_strategy_b_full(monthly_px_b, b_cfg=B_CFG)
+                bt_results_b = run_backtest_strategy_b_full(monthly_px_b)
                 bt_ok_b = len(bt_results_b) > 0
             except Exception as e:
                 st.error(f"전략 B 백테스트 데이터 로딩 중 오류가 발생했습니다: {e}")
@@ -2922,44 +2741,6 @@ else:
 
 
 
-            st.markdown("---")
-            st.markdown("### 🔬 2단계 개선 전/후 비교 (모멘텀 평활화 · 변동성 타깃팅)")
-            _cmp_w = B_CFG[0] if B_CFG[0] != "orig" else "mild"
-            st.caption(f"같은 기간·같은 자산군에서 개선 요소만 바꿔 비교합니다. 가중치는 설정 패널 선택값(기존이면 완화 4-3-2-1)을, 변동성 타깃팅은 패널의 기간·타깃({B_CFG[2]}개월, {B_CFG[3]:.0f}%)을 사용합니다.")
-            _cmp_cfgs_b = {
-                "① 기존": ("orig", False, B_CFG[2], B_CFG[3]),
-                f"② 가중 {B_WEIGHT_LABELS[_cmp_w]}만": (_cmp_w, False, B_CFG[2], B_CFG[3]),
-                "③ 변동성 타깃만": ("orig", True, B_CFG[2], B_CFG[3]),
-                "④ 둘 다": (_cmp_w, True, B_CFG[2], B_CFG[3]),
-            }
-            _cmp_res_b = {k: run_backtest_strategy_b_full(monthly_px_b, b_cfg=v) for k, v in _cmp_cfgs_b.items()}
-            _cmp_rows_b = []
-            for _k, _bt in _cmp_res_b.items():
-                _sm = summarize_bt_b(_bt)
-                if _sm:
-                    _cmp_rows_b.append({"방식": _k, **_sm})
-            if _cmp_rows_b:
-                st.dataframe(pd.DataFrame(_cmp_rows_b).round(2), use_container_width=True, hide_index=True)
-                st.caption("비중이 줄면 CAGR도 함께 낮아지는 것이 보통입니다. MDD·변동성·샤프가 얼마나 개선되는지와 함께 판단하세요.")
-                _nav_cmp_b = pd.concat({_k.split(" ")[0]: _bt.set_index("date")["nav"] for _k, _bt in _cmp_res_b.items() if len(_bt) > 0}, axis=1)
-                st.line_chart(_nav_cmp_b)
-
-            with st.expander("🧪 수치 적정성 점검 (가중치 × 타깃 변동성 민감도)", expanded=False):
-                st.caption(f"각 칸은 해당 설정으로 전략 B를 다시 백테스트한 결과입니다(변동성 계산 {B_CFG[2]}개월). '끄기'는 변동성 타깃팅 미적용입니다. 한 칸만 유독 좋은 결과보다 인접 칸들도 비슷한 구간을 믿으세요.")
-                _tgts = [None, 25.0, 30.0, 35.0, 40.0, 50.0, 60.0]
-                _grid_b = {"CAGR (%)": {}, "MDD (%)": {}, "샤프": {}}
-                for _wm, _wl in B_WEIGHT_LABELS.items():
-                    for _g in _grid_b:
-                        _grid_b[_g][_wl] = {}
-                    for _tg in _tgts:
-                        _cfg_g = (_wm, _tg is not None, B_CFG[2], _tg if _tg is not None else B_CFG[3])
-                        _smg = summarize_bt_b(run_backtest_strategy_b_full(monthly_px_b, b_cfg=_cfg_g))
-                        for _g in _grid_b:
-                            _grid_b[_g][_wl]["끄기" if _tg is None else f"{_tg:.0f}%"] = _smg[_g] if _smg else np.nan
-                for _g, _d in _grid_b.items():
-                    st.markdown(f"**{_g}**  (행: 가중치 / 열: 타깃 변동성)")
-                    st.dataframe(pd.DataFrame(_d).T.round(2), use_container_width=True)
-
             st.markdown("##### 🗓️ 월별 세부 리밸런싱 기록")
             display_bt_b = bt_results_b.copy()
             display_bt_b["연월"] = display_bt_b["date"].dt.strftime("%Y-%m")
@@ -2982,10 +2763,9 @@ else:
             국면에 맞춰 주도 섹터 또는 원자재 방어자산 중 1개 종목에 집중 투자합니다.
 
             #### 1단계 — 배당수익률 필터링 (신호)
-            * S&P 500(SPY)의 최근 12개월 배당 합계를 현재가로 나눈 **배당수익률**을 월말마다 산출합니다.
-            * **기존 방식**: 배당수익률이 고정 기준선(기본 1.33%) 초과면 공격, 이하면 방어
-            * **1단계 개선(선택)**: 배당수익률을 롤링 평균·표준편차(기본 36개월)로 표준화한 **Z-Score**가 임계값(기본 -0.5) 초과면 공격, 이하면 방어
-            * 적용 방식과 수치는 화면 상단 **⚙️ 전략 C 배당 신호 설정**에서 선택하며, 아래 백테스트 섹션에서 전/후 성과를 비교할 수 있습니다.
+            * S&P 500(SPY)의 최근 12개월 배당 합계를 현재가로 나눈 **실시간 배당수익률**을 산출합니다.
+            * **공격 신호**: 배당수익률 **1.33% 초과** (시장 저평가 국면)
+            * **방어 신호**: 배당수익률 **1.33% 이하** (시장 과열 국면)
 
             #### 2단계 — 공격/방어 자산 매수 규칙
             * **공격 신호 (주도 섹터 자산 중 선택)**
@@ -3006,7 +2786,7 @@ else:
 
         st.markdown(
             "**1단계: 카나리아 신호 판단 (S&P 500 배당수익률)** \n"
-            "선택한 방식(고정 기준선 또는 롤링 Z-Score)의 기준을 초과하면 공격 모드, 이하일 경우 시장 과열로 판단하여 방어 모드로 진입합니다."
+            "배당수익률이 **1.33%** 초과 시 주식 저평가로 판단하여 공격 모드, 이하일 경우 시장 과열로 판단하여 방어 모드로 진입합니다."
         )
         
         st.markdown(f"""
@@ -3015,14 +2795,13 @@ else:
             <div class="control-subheader">
                 야후 파이낸스(yfinance) API로부터 소수 및 백분율 단위를 실시간으로 정합 보정하여 산출한 데이터입니다.<br/>
                 • <b>실시간 배당수익률: {realtime_dy:.2f}%</b><br/>
-                • <b>현재 판정 기준: {dy_basis}</b><br/>
-                • <b>모드 분류 기준선: {dy_cut}</b> (초과 시 공격 모드 / 이하 시 방어 모드)
+                • <b>모드 분류 기준선: 1.33%</b> (초과 시 공격 모드 / 이하 시 방어 모드)
             </div>
         </div>
         """, unsafe_allow_html=True)
         
         if is_attack_c:
-            st.success(f"🔥 **현재 모드: 공격 자산 모드** ({dy_basis} > {dy_cut}) - 기준 초과 국면으로 주식을 매수합니다.")
+            st.success(f"🔥 **현재 모드: 공격 자산 모드** (실시간 배당수익률 {realtime_dy:.2f}% > 1.33%) - 시장 저평가 국면으로 주식을 매수합니다.")
             df_off_c = df_all[df_all["Ticker"].isin(OFFENSIVE_C)].copy()
             df_off_c = df_off_c.sort_values(by="A_공격스코어", ascending=False)
             
@@ -3039,7 +2818,7 @@ else:
                 s = data_dict.get(t, {}).get("A_공격스코어", 0.0)
                 st.info(f"🏆 **{t}** : 비중 **100%** (현재가: ${p:.2f}, 모멘텀: {s:.2f}%)")
         else:
-            st.warning(f"🛡️ **현재 모드: 방어 자산 모드** ({dy_basis} <= {dy_cut}) - 시장 과열 국면으로 원자재 자산으로 대피합니다.")
+            st.warning(f"🛡️ **현재 모드: 방어 자산 모드** (실시간 배당수익률 {realtime_dy:.2f}% <= 1.33%) - 시장 과열 국면으로 원자재 자산으로 대피합니다.")
             df_def_c = df_all[df_all["Ticker"].isin(DEFENSIVE_C)].copy()
             df_def_c = df_def_c.sort_values(by="A_방어스코어", ascending=False)
             
@@ -3081,7 +2860,7 @@ else:
                 daily_px_c = get_daily_price_history_a(bt_tickers_c, start=bt_start_c)
                 monthly_px_c = to_monthly_last_a(daily_px_c)
                 spy_divs_c = get_spy_dividend_history()
-                bt_results_c = run_backtest_strategy_c_full(monthly_px_c, spy_divs_c, dy_cfg=DY_CFG)
+                bt_results_c = run_backtest_strategy_c_full(monthly_px_c, spy_divs_c)
                 bt_ok_c = len(bt_results_c) > 0
             except Exception as e:
                 st.error(f"전략 C 백테스트 데이터 로딩 중 오류가 발생했습니다: {e}")
@@ -3429,55 +3208,6 @@ else:
 
 
 
-
-            st.markdown("---")
-            st.markdown("### 🔬 1단계 개선 전/후 비교 (배당수익률 카나리아)")
-            st.caption("같은 기간·같은 자산군에서 카나리아 신호만 바꿔 비교합니다. 롤링 기간·Z 임계값·고정 기준선은 상단 '⚙️ 전략 C 배당 신호 설정' 값을 사용합니다.")
-            _cmp_cfgs = {
-                f"① 기존 (고정 {DY_CFG[3]:.2f}%, 조정가)": ("fixed", DY_CFG[1], DY_CFG[2], DY_CFG[3]),
-                f"② 고정 {DY_CFG[3]:.2f}% + 비조정가": ("fixed_raw", DY_CFG[1], DY_CFG[2], DY_CFG[3]),
-                f"③ Z-Score ({DY_CFG[1]}개월, > {DY_CFG[2]:+.2f})": ("zscore", DY_CFG[1], DY_CFG[2], DY_CFG[3]),
-            }
-            _cmp_res = {k: run_backtest_strategy_c_full(monthly_px_c, spy_divs_c, dy_cfg=v) for k, v in _cmp_cfgs.items()}
-            _cmp_rows = []
-            for _k, _bt in _cmp_res.items():
-                _sm = summarize_bt_c(_bt)
-                if _sm:
-                    _cmp_rows.append({"방식": _k, **_sm})
-            if _cmp_rows:
-                st.dataframe(pd.DataFrame(_cmp_rows).round(2), use_container_width=True, hide_index=True)
-                st.caption("②는 가격 왜곡(배당 조정가)만 바로잡은 중간 단계입니다. ①→②는 데이터 정정 효과, ②→③은 Z-Score 방식 자체의 효과로 읽으세요.")
-                _nav_cmp = pd.concat({_k.split(" ")[0]: _bt.set_index("date")["nav"] for _k, _bt in _cmp_res.items() if len(_bt) > 0}, axis=1)
-                st.line_chart(_nav_cmp)
-
-            _dy_tbl_v = get_spy_dy_table(DY_CFG[1])
-            if not _dy_tbl_v.empty:
-                _dy_tbl_v = _dy_tbl_v[_dy_tbl_v.index >= pd.Timestamp(monthly_px_c.index[0])]
-                st.markdown("##### 📉 배당수익률과 롤링 평균 (구조적 하락 확인)")
-                st.line_chart(_dy_tbl_v[["dy", "mean"]].rename(columns={"dy": "배당수익률 (%)", "mean": f"{DY_CFG[1]}개월 평균 (%)"}))
-                st.markdown("##### 📈 Z-Score와 임계값")
-                _z_df = _dy_tbl_v[["z"]].rename(columns={"z": "Z-Score"})
-                _z_df["임계값"] = DY_CFG[2]
-                st.line_chart(_z_df)
-
-            with st.expander("🧪 수치 적정성 점검 (롤링 기간 × Z 임계값 민감도)", expanded=False):
-                st.caption("각 칸은 해당 설정으로 전략 C를 다시 백테스트한 결과입니다. 한 칸만 유독 좋은 '뾰족한 최적값'은 과최적화 신호이고, 인접 칸들도 비슷하게 좋은 '넓은 고원' 구간이 믿을 만합니다.")
-                _wins = [24, 36, 48, 60]
-                _thrs = [-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5]
-                _grid = {"CAGR (%)": {}, "MDD (%)": {}, "공격 비율 (%)": {}}
-                for _w in _wins:
-                    for _g in _grid:
-                        _grid[_g][f"{_w}개월"] = {}
-                    for _th in _thrs:
-                        _sm = summarize_bt_c(run_backtest_strategy_c_full(monthly_px_c, spy_divs_c, dy_cfg=("zscore", _w, _th, DY_CFG[3])))
-                        for _g in _grid:
-                            _grid[_g][f"{_w}개월"][f"{_th:+.2f}"] = _sm[_g] if _sm else np.nan
-                for _g, _d in _grid.items():
-                    st.markdown(f"**{_g}**  (행: 롤링 기간 / 열: Z 임계값)")
-                    st.dataframe(pd.DataFrame(_d).T.round(1), use_container_width=True)
-                _base = summarize_bt_c(_cmp_res[list(_cmp_res.keys())[0]])
-                if _base:
-                    st.caption(f"참고 — 기존 방식: CAGR {_base['CAGR (%)']:.1f}%, MDD {_base['MDD (%)']:.1f}%, 공격 비율 {_base['공격 비율 (%)']:.0f}%")
 
             st.markdown("##### 🗓️ 월별 세부 리밸런싱 기록")
             display_bt_c = bt_results_c.copy()
