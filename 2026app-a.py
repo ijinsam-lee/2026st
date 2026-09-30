@@ -125,42 +125,48 @@ DEFENSIVE_C = ["GLD", "PDBC", "OILK", "SHY", "TLT"] # 3대 원자재 및 채권 
 ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C + ["SCHD", "QQQM", "IGV", "XLU", "JEPI", "TQQQ", "SOXL", "DIA", "IWM", "XLF"]))
 
 # ============================================================
-# [1단계 개선] 전략 C 배당수익률 동적 Z-Score 설정
-#  - 고정 기준선(1.33%) 대신, SPY 배당수익률의 최근 36개월 롤링 평균/표준편차 기준 Z-Score로 판정
-#  - 주의: 아래 상수를 바꾼 뒤에는 Streamlit 캐시(Clear cache)를 비우거나 서버를 재시작해야 백테스트에 반영됩니다.
+# [1단계 개선] 전략 C 배당수익률 신호 설정
+#  적용 여부·수치는 화면의 '⚙️ 전략 C 배당 신호 설정' 패널에서 바꿉니다. (기본값: 기존 방식)
+#  mode  "fixed"     = 기존 방식 (조정가 기반 배당수익률 > 고정 기준선)
+#        "fixed_raw" = 비조정 종가 기반 배당수익률 > 고정 기준선 (가격 왜곡만 바로잡은 중간 단계, 비교용)
+#        "zscore"    = 비조정 배당수익률의 롤링 Z-Score > 임계값 (1단계 개선)
+#  cfg = (mode, z_window_months, z_threshold, fixed_threshold)
 # ============================================================
-USE_DY_ZSCORE = True        # False면 기존 고정 기준선 방식으로 복귀 (전/후 성과 비교용)
-DY_Z_WINDOW = 36            # 롤링 윈도우 (개월)
-DY_Z_THRESHOLD = -0.5       # Z-Score가 이 값 초과면 공격
-DY_FIXED_THRESHOLD = 1.33   # 기존 고정 기준선 (USE_DY_ZSCORE=False 또는 Z 산출 불가 시 사용)
+DEFAULT_DY_CFG = ("fixed", 36, -0.5, 1.33)
 
 @st.cache_data(ttl=3600)
-def get_spy_dy_table(start="2012-01-01"):
-    """SPY 월말 배당수익률(%)과 롤링 Z-Score 테이블.
-    비조정 종가(auto_adjust=False) 사용: 조정가를 쓰면 과거 배당수익률이 실제보다 과대 계산됨.
-    Z 산출에 36개월이 필요하므로 백테스트 시작(2015)보다 앞선 2012년부터 받아 워밍업을 흡수."""
+def get_spy_dy_raw(start="2008-01-01"):
+    """SPY 월말 배당수익률(%) 시계열. 비조정 종가(auto_adjust=False) 사용:
+    조정가를 쓰면 과거 배당수익률이 실제보다 과대 계산됨. 60개월 Z까지 커버하도록 2008년부터 수집."""
     try:
         tk = yf.Ticker("SPY")
         px = tk.history(start=start, interval="1d", auto_adjust=False)["Close"].dropna()
         divs = tk.dividends.copy()
         if px.empty or divs.empty:
-            return pd.DataFrame()
+            return pd.Series(dtype=float)
         if px.index.tz is not None:
             px.index = px.index.tz_localize(None)
         if divs.index.tz is not None:
             divs.index = divs.index.tz_localize(None)
         px_m = px.resample("ME").last().dropna()
-        dy_vals = []
+        vals = []
         for d, price in px_m.items():
             ttm = divs[(divs.index > d - pd.Timedelta(days=365)) & (divs.index <= d)].sum()
-            dy_vals.append(ttm / price * 100 if price > 0 and ttm > 0 else np.nan)
-        tbl = pd.DataFrame({"dy": dy_vals}, index=px_m.index)
-        tbl["mean"] = tbl["dy"].rolling(DY_Z_WINDOW).mean()
-        tbl["std"] = tbl["dy"].rolling(DY_Z_WINDOW).std()
-        tbl["z"] = np.where(tbl["std"] > 0, (tbl["dy"] - tbl["mean"]) / tbl["std"], np.nan)
-        return tbl
+            vals.append(ttm / price * 100 if price > 0 and ttm > 0 else np.nan)
+        return pd.Series(vals, index=px_m.index, name="dy")
     except Exception:
+        return pd.Series(dtype=float)
+
+def get_spy_dy_table(window=36):
+    """월말 배당수익률(dy)과 롤링 평균/표준편차/Z-Score 테이블."""
+    dy = get_spy_dy_raw()
+    if dy is None or len(dy) == 0:
         return pd.DataFrame()
+    tbl = pd.DataFrame({"dy": dy})
+    tbl["mean"] = tbl["dy"].rolling(int(window)).mean()
+    tbl["std"] = tbl["dy"].rolling(int(window)).std()
+    tbl["z"] = np.where(tbl["std"] > 0, (tbl["dy"] - tbl["mean"]) / tbl["std"], np.nan)
+    return tbl
 
 def get_dy_z_at(tbl, date):
     """해당 연/월의 (배당수익률, Z-Score). 없으면 (nan, nan)."""
@@ -175,11 +181,31 @@ def get_dy_z_at(tbl, date):
     r = m.iloc[-1]
     return float(r["dy"]), float(r["z"])
 
-def dy_signal_is_attack(dy, z):
-    """전략 C 공격/방어 판정 (단일 진입점). Z 사용 불가 시 고정 기준선으로 대체."""
-    if USE_DY_ZSCORE and pd.notna(z):
-        return bool(z > DY_Z_THRESHOLD)
-    return bool(dy > DY_FIXED_THRESHOLD)
+def dy_signal_is_attack(dy, z, cfg=DEFAULT_DY_CFG):
+    """전략 C 공격/방어 판정 (단일 진입점). Z 산출 불가 시 고정 기준선으로 대체."""
+    if cfg[0] == "zscore" and pd.notna(z):
+        return bool(z > cfg[2])
+    return bool(dy > cfg[3])
+
+def summarize_bt_c(bt):
+    """백테스트 결과(DataFrame) 핵심 지표 요약 (월 수익률 기준)."""
+    if bt is None or len(bt) == 0:
+        return None
+    r = bt["monthly_return"].values / 100.0
+    n = len(r)
+    nav = bt["nav"].values
+    sd = r.std(ddof=1) if n > 1 else np.nan
+    return {
+        "CAGR (%)": ((nav[-1] / 100.0) ** (12.0 / n) - 1) * 100,
+        "MDD (%)": float(bt["drawdown"].min()),
+        "연변동성 (%)": sd * np.sqrt(12) * 100 if pd.notna(sd) else np.nan,
+        "샤프": (r.mean() * 12) / (sd * np.sqrt(12)) if pd.notna(sd) and sd > 0 else np.nan,
+        "공격 비율 (%)": float(bt["mode"].astype(str).str.startswith("공격").mean() * 100),
+        "현금 비율 (%)": float(bt["weights_str"].astype(str).str.contains("CASH").mean() * 100),
+        "신호 전환 (회)": int((bt["mode"] != bt["mode"].shift()).sum() - 1),
+        "최종 NAV": float(nav[-1]),
+        "개월 수": n,
+    }
 
 # ============================================================
 # 전략 A 실시간 백테스트 엔진 (TIP 11M 이동평균 카나리아 + 공격 Top4/방어 Top1 로테이션)
@@ -369,12 +395,12 @@ def get_spy_dividend_history():
         return pd.Series(dtype=float)
 
 @st.cache_data(ttl=3600)
-def run_backtest_strategy_c_full(monthly_px, spy_divs):
+def run_backtest_strategy_c_full(monthly_px, spy_divs, dy_cfg=DEFAULT_DY_CFG):
     records = []
     nav = 100.0
     peak = 100.0
     monthly_returns = monthly_px.pct_change().shift(-1)
-    dy_tbl = get_spy_dy_table() if USE_DY_ZSCORE else pd.DataFrame()
+    dy_tbl = get_spy_dy_table(dy_cfg[1]) if dy_cfg[0] in ("zscore", "fixed_raw") else pd.DataFrame()
 
     for i in range(11, len(monthly_px) - 1):
         if "SPY" not in monthly_px.columns:
@@ -389,7 +415,7 @@ def run_backtest_strategy_c_full(monthly_px, spy_divs):
                 continue
             dy = (div_sum / spy_price) * 100
             dy_z = np.nan
-        is_attack = dy_signal_is_attack(dy, dy_z)
+        is_attack = dy_signal_is_attack(dy, dy_z, dy_cfg)
 
         alloc = {}
         if is_attack:
@@ -441,6 +467,8 @@ def run_backtest_strategy_c_full(monthly_px, spy_divs):
             "monthly_return": port_ret * 100,
             "drawdown": dd,
             "weights_str": ", ".join([f"{t} {w}%" for t, w in alloc.items() if w > 0]),
+            "dy": dy,
+            "dy_z": dy_z,
             "alloc": dict(alloc),
         })
 
@@ -450,10 +478,10 @@ def run_backtest_strategy_c_full(monthly_px, spy_divs):
 # 2026 혼합전략 백테스트 엔진 (전략A + 전략B + 전략C 각 33.33% 동일비중 혼합)
 # ============================================================
 @st.cache_data(ttl=3600)
-def run_backtest_strategy_mix_full(monthly_px, spy_divs):
+def run_backtest_strategy_mix_full(monthly_px, spy_divs, dy_cfg=DEFAULT_DY_CFG):
     bt_a = run_backtest_strategy_a_full(monthly_px)
     bt_b = run_backtest_strategy_b_full(monthly_px)
-    bt_c = run_backtest_strategy_c_full(monthly_px, spy_divs)
+    bt_c = run_backtest_strategy_c_full(monthly_px, spy_divs, dy_cfg=dy_cfg)
 
     if bt_a.empty or bt_b.empty or bt_c.empty:
         return pd.DataFrame()
@@ -524,10 +552,11 @@ def run_backtest_strategy_mix_improved_full(
     apply_cap=False, weight_cap=25.0,
     apply_vix_dampening=False, vix_threshold=25.0,
     apply_stop_loss=False, stop_loss_pct=-7.0,
+    dy_cfg=DEFAULT_DY_CFG,
 ):
     bt_a = run_backtest_strategy_a_full(monthly_px)
     bt_b = run_backtest_strategy_b_full(monthly_px)
-    bt_c = run_backtest_strategy_c_full(monthly_px, spy_divs)
+    bt_c = run_backtest_strategy_c_full(monthly_px, spy_divs, dy_cfg=dy_cfg)
 
     if bt_a.empty or bt_b.empty or bt_c.empty:
         return pd.DataFrame()
@@ -1020,7 +1049,7 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
     # 3. 전략 C 배분 (이중 스케일링 버그 수정 완료)
     dy_val = 1.32
     dy_z_hist = np.nan
-    _dy_tbl_h = get_spy_dy_table() if USE_DY_ZSCORE else pd.DataFrame()
+    _dy_tbl_h = get_spy_dy_table(DY_CFG[1]) if DY_CFG[0] in ("zscore", "fixed_raw") else pd.DataFrame()
     _dy_h, _z_h = get_dy_z_at(_dy_tbl_h, target_date)
     if pd.notna(_dy_h):
         dy_val = float(_dy_h)
@@ -1040,7 +1069,7 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
         if spy_price and spy_price > 0:
             dy_val = float((sum_divs / spy_price) * 100)
         
-    is_attack_c_hist = dy_signal_is_attack(dy_val, dy_z_hist)
+    is_attack_c_hist = dy_signal_is_attack(dy_val, dy_z_hist, DY_CFG)
 
     alloc_c_hist = {}
     if is_attack_c_hist:
@@ -1107,16 +1136,33 @@ else:
     is_attack_b = tip_score_b > 0
 
     # S&P 500 실시간 배당수익률 산출 및 시그널 매핑
+    # ---- 전략 C 배당 신호 설정 (1단계 개선 적용 여부 / 수치) ----
+    with st.expander("⚙️ 전략 C 배당 신호 설정 (1단계 개선 적용 여부)", expanded=False):
+        _mode_lbl = st.radio(
+            "전략 C 카나리아 방식",
+            ["기존 고정 기준선", "동적 Z-Score (1단계 개선)"],
+            index=0, horizontal=True, key="dy_mode_radio",
+        )
+        _cz1, _cz2, _cz3 = st.columns(3)
+        _z_window = _cz1.selectbox("롤링 기간 (개월)", [24, 36, 48, 60], index=1, key="dy_z_window")
+        _z_thr = _cz2.number_input("Z 임계값 (초과 시 공격)", min_value=-2.0, max_value=2.0, value=-0.5, step=0.05, key="dy_z_thr")
+        _fixed_thr = _cz3.number_input("고정 기준선 (%)", min_value=0.5, max_value=3.0, value=1.33, step=0.01, key="dy_fixed_thr")
+        st.caption("이 설정은 실시간 신호, 과거 월말 포트폴리오, 혼합전략·전략 C 백테스트에 모두 적용됩니다. 전/후 성과 비교와 수치 민감도는 '🔄 전략 C' 탭에 있습니다.")
+    DY_CFG = (
+        "zscore" if _mode_lbl.startswith("동적") else "fixed",
+        int(_z_window), float(_z_thr), float(_fixed_thr),
+    )
+
     realtime_dy = get_sp500_dividend_yield()
-    _dy_tbl_live = get_spy_dy_table() if USE_DY_ZSCORE else pd.DataFrame()
+    _dy_tbl_live = get_spy_dy_table(DY_CFG[1]) if DY_CFG[0] == "zscore" else pd.DataFrame()
     dy_z_live = float(_dy_tbl_live["z"].iloc[-1]) if (not _dy_tbl_live.empty and pd.notna(_dy_tbl_live["z"].iloc[-1])) else np.nan
-    is_attack_c = dy_signal_is_attack(realtime_dy, dy_z_live)
-    if USE_DY_ZSCORE and pd.notna(dy_z_live):
+    is_attack_c = dy_signal_is_attack(realtime_dy, dy_z_live, DY_CFG)
+    if DY_CFG[0] == "zscore" and pd.notna(dy_z_live):
         dy_basis = f"Z-Score {dy_z_live:+.2f} (배당수익률 {realtime_dy:.2f}%)"
-        dy_cut = f"{DY_Z_THRESHOLD:+.1f}"
+        dy_cut = f"{DY_CFG[2]:+.2f}"
     else:
         dy_basis = f"배당수익률 {realtime_dy:.2f}%"
-        dy_cut = f"{DY_FIXED_THRESHOLD:.2f}%"
+        dy_cut = f"{DY_CFG[3]:.2f}%"
     
     tab_2026, tab_a, tab_b, tab_c, tab_rank, tab_calc = st.tabs([
         "🏆 2026 혼합전략", 
@@ -1270,7 +1316,7 @@ else:
 
             #### 🔄 전략 C: 배당 기반 섹터 로테이션 (배분 비중 33.33%)
             S&P 500의 실시간 배당수익률을 기반으로 주식 저평가/과열 국면을 판독합니다.
-            * **카나리아**: SPY 배당수익률의 최근 36개월 롤링 Z-Score — -0.5 초과면 공격, 이하면 방어
+            * **카나리아**: SPY 배당수익률 — 기본은 고정 기준선(1.33%) 초과 시 공격. '⚙️ 전략 C 배당 신호 설정'에서 롤링 Z-Score 방식(예: 36개월, -0.5 초과 시 공격)으로 전환 가능
             * **공격 자산군 (7개)**: `FDN, LIT, SMH, XLE, IGV, QQQM, XLU`
             * **방어 자산군 (5개)**: `GLD, PDBC, OILK, SHY, TLT`
             * **운용 가이드**: 공격 시 1·3·6·12개월 단순평균 모멘텀 1위 섹터에 100% 투자. 방어 시 1·3·6·9·12개월 단순평균 모멘텀 1위 자산에 투자하되, 그 스코어마저 0 이하면 현금 100%로 대피.
@@ -1304,7 +1350,7 @@ else:
         c_sig1, c_sig2, c_sig3 = st.columns(3)
         c_sig1.metric("전략A (TIP 비율)", f"{tip_ratio:.3f}", "공격" if is_attack_a else "방어", delta_color="inverse" if not is_attack_a else "normal")
         c_sig2.metric("전략B (TIP 모멘텀)", f"{tip_score_b:.2f}%", "공격" if is_attack_b else "방어", delta_color="inverse" if not is_attack_b else "normal")
-        c_sig3.metric("전략C (배당 Z-Score)" if pd.notna(dy_z_live) and USE_DY_ZSCORE else "전략C (배당수익률)", f"{dy_z_live:+.2f}" if pd.notna(dy_z_live) and USE_DY_ZSCORE else f"{realtime_dy:.2f}%", "공격" if is_attack_c else "방어", delta_color="inverse" if not is_attack_c else "normal")
+        c_sig3.metric("전략C (배당 Z-Score)" if DY_CFG[0] == "zscore" and pd.notna(dy_z_live) else "전략C (배당수익률)", f"{dy_z_live:+.2f}" if DY_CFG[0] == "zscore" and pd.notna(dy_z_live) else f"{realtime_dy:.2f}%", "공격" if is_attack_c else "방어", delta_color="inverse" if not is_attack_c else "normal")
 
         st.markdown("### 📊 포트폴리오 비중 분배 현황")
         chart_col, table_col = st.columns([5, 5])
@@ -1505,9 +1551,10 @@ else:
                         apply_cap=apply_cap_mix, weight_cap=25.0,
                         apply_vix_dampening=apply_vix_mix, vix_threshold=25.0,
                         apply_stop_loss=apply_stop_mix, stop_loss_pct=-7.0,
+                        dy_cfg=DY_CFG,
                     )
                 else:
-                    bt_results_mix = run_backtest_strategy_mix_full(monthly_px_mix, spy_divs_mix)
+                    bt_results_mix = run_backtest_strategy_mix_full(monthly_px_mix, spy_divs_mix, dy_cfg=DY_CFG)
                 bt_ok_mix = len(bt_results_mix) > 0
             except Exception as e:
                 st.error(f"2026 혼합전략 백테스트 데이터 로딩 중 오류가 발생했습니다: {e}")
@@ -2811,10 +2858,10 @@ else:
             국면에 맞춰 주도 섹터 또는 원자재 방어자산 중 1개 종목에 집중 투자합니다.
 
             #### 1단계 — 배당수익률 필터링 (신호)
-            * S&P 500(SPY)의 최근 12개월 배당 합계를 (비조정) 현재가로 나눈 **배당수익률**을 월말마다 산출합니다.
-            * 이 배당수익률의 **최근 36개월 롤링 평균·표준편차**로 표준화한 **Z-Score**를 계산합니다. (자사주 매입·빅테크 비중 확대 등 구조적 하락 추세를 자동 반영)
-            * **공격 신호**: Z-Score **-0.5 초과** (자기 평균 대비 과열이 심하지 않은 국면)
-            * **방어 신호**: Z-Score **-0.5 이하** (자기 평균 대비 배당수익률이 크게 낮은 과열 국면)
+            * S&P 500(SPY)의 최근 12개월 배당 합계를 현재가로 나눈 **배당수익률**을 월말마다 산출합니다.
+            * **기존 방식**: 배당수익률이 고정 기준선(기본 1.33%) 초과면 공격, 이하면 방어
+            * **1단계 개선(선택)**: 배당수익률을 롤링 평균·표준편차(기본 36개월)로 표준화한 **Z-Score**가 임계값(기본 -0.5) 초과면 공격, 이하면 방어
+            * 적용 방식과 수치는 화면 상단 **⚙️ 전략 C 배당 신호 설정**에서 선택하며, 아래 백테스트 섹션에서 전/후 성과를 비교할 수 있습니다.
 
             #### 2단계 — 공격/방어 자산 매수 규칙
             * **공격 신호 (주도 섹터 자산 중 선택)**
@@ -2834,8 +2881,8 @@ else:
             """)
 
         st.markdown(
-            "**1단계: 카나리아 신호 판단 (S&P 500 배당수익률 Z-Score)** \n"
-            "배당수익률의 36개월 Z-Score가 **-0.5** 초과 시 공격 모드, 이하일 경우 시장 과열로 판단하여 방어 모드로 진입합니다."
+            "**1단계: 카나리아 신호 판단 (S&P 500 배당수익률)** \n"
+            "선택한 방식(고정 기준선 또는 롤링 Z-Score)의 기준을 초과하면 공격 모드, 이하일 경우 시장 과열로 판단하여 방어 모드로 진입합니다."
         )
         
         st.markdown(f"""
@@ -2851,7 +2898,7 @@ else:
         """, unsafe_allow_html=True)
         
         if is_attack_c:
-            st.success(f"🔥 **현재 모드: 공격 자산 모드** ({dy_basis} > {dy_cut}) - 과열이 심하지 않은 국면으로 주식을 매수합니다.")
+            st.success(f"🔥 **현재 모드: 공격 자산 모드** ({dy_basis} > {dy_cut}) - 기준 초과 국면으로 주식을 매수합니다.")
             df_off_c = df_all[df_all["Ticker"].isin(OFFENSIVE_C)].copy()
             df_off_c = df_off_c.sort_values(by="A_공격스코어", ascending=False)
             
@@ -2910,7 +2957,7 @@ else:
                 daily_px_c = get_daily_price_history_a(bt_tickers_c, start=bt_start_c)
                 monthly_px_c = to_monthly_last_a(daily_px_c)
                 spy_divs_c = get_spy_dividend_history()
-                bt_results_c = run_backtest_strategy_c_full(monthly_px_c, spy_divs_c)
+                bt_results_c = run_backtest_strategy_c_full(monthly_px_c, spy_divs_c, dy_cfg=DY_CFG)
                 bt_ok_c = len(bt_results_c) > 0
             except Exception as e:
                 st.error(f"전략 C 백테스트 데이터 로딩 중 오류가 발생했습니다: {e}")
@@ -3258,6 +3305,55 @@ else:
 
 
 
+
+            st.markdown("---")
+            st.markdown("### 🔬 1단계 개선 전/후 비교 (배당수익률 카나리아)")
+            st.caption("같은 기간·같은 자산군에서 카나리아 신호만 바꿔 비교합니다. 롤링 기간·Z 임계값·고정 기준선은 상단 '⚙️ 전략 C 배당 신호 설정' 값을 사용합니다.")
+            _cmp_cfgs = {
+                f"① 기존 (고정 {DY_CFG[3]:.2f}%, 조정가)": ("fixed", DY_CFG[1], DY_CFG[2], DY_CFG[3]),
+                f"② 고정 {DY_CFG[3]:.2f}% + 비조정가": ("fixed_raw", DY_CFG[1], DY_CFG[2], DY_CFG[3]),
+                f"③ Z-Score ({DY_CFG[1]}개월, > {DY_CFG[2]:+.2f})": ("zscore", DY_CFG[1], DY_CFG[2], DY_CFG[3]),
+            }
+            _cmp_res = {k: run_backtest_strategy_c_full(monthly_px_c, spy_divs_c, dy_cfg=v) for k, v in _cmp_cfgs.items()}
+            _cmp_rows = []
+            for _k, _bt in _cmp_res.items():
+                _sm = summarize_bt_c(_bt)
+                if _sm:
+                    _cmp_rows.append({"방식": _k, **_sm})
+            if _cmp_rows:
+                st.dataframe(pd.DataFrame(_cmp_rows).round(2), use_container_width=True, hide_index=True)
+                st.caption("②는 가격 왜곡(배당 조정가)만 바로잡은 중간 단계입니다. ①→②는 데이터 정정 효과, ②→③은 Z-Score 방식 자체의 효과로 읽으세요.")
+                _nav_cmp = pd.concat({_k.split(" ")[0]: _bt.set_index("date")["nav"] for _k, _bt in _cmp_res.items() if len(_bt) > 0}, axis=1)
+                st.line_chart(_nav_cmp)
+
+            _dy_tbl_v = get_spy_dy_table(DY_CFG[1])
+            if not _dy_tbl_v.empty:
+                _dy_tbl_v = _dy_tbl_v[_dy_tbl_v.index >= pd.Timestamp(monthly_px_c.index[0])]
+                st.markdown("##### 📉 배당수익률과 롤링 평균 (구조적 하락 확인)")
+                st.line_chart(_dy_tbl_v[["dy", "mean"]].rename(columns={"dy": "배당수익률 (%)", "mean": f"{DY_CFG[1]}개월 평균 (%)"}))
+                st.markdown("##### 📈 Z-Score와 임계값")
+                _z_df = _dy_tbl_v[["z"]].rename(columns={"z": "Z-Score"})
+                _z_df["임계값"] = DY_CFG[2]
+                st.line_chart(_z_df)
+
+            with st.expander("🧪 수치 적정성 점검 (롤링 기간 × Z 임계값 민감도)", expanded=False):
+                st.caption("각 칸은 해당 설정으로 전략 C를 다시 백테스트한 결과입니다. 한 칸만 유독 좋은 '뾰족한 최적값'은 과최적화 신호이고, 인접 칸들도 비슷하게 좋은 '넓은 고원' 구간이 믿을 만합니다.")
+                _wins = [24, 36, 48, 60]
+                _thrs = [-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5]
+                _grid = {"CAGR (%)": {}, "MDD (%)": {}, "공격 비율 (%)": {}}
+                for _w in _wins:
+                    for _g in _grid:
+                        _grid[_g][f"{_w}개월"] = {}
+                    for _th in _thrs:
+                        _sm = summarize_bt_c(run_backtest_strategy_c_full(monthly_px_c, spy_divs_c, dy_cfg=("zscore", _w, _th, DY_CFG[3])))
+                        for _g in _grid:
+                            _grid[_g][f"{_w}개월"][f"{_th:+.2f}"] = _sm[_g] if _sm else np.nan
+                for _g, _d in _grid.items():
+                    st.markdown(f"**{_g}**  (행: 롤링 기간 / 열: Z 임계값)")
+                    st.dataframe(pd.DataFrame(_d).T.round(1), use_container_width=True)
+                _base = summarize_bt_c(_cmp_res[list(_cmp_res.keys())[0]])
+                if _base:
+                    st.caption(f"참고 — 기존 방식: CAGR {_base['CAGR (%)']:.1f}%, MDD {_base['MDD (%)']:.1f}%, 공격 비율 {_base['공격 비율 (%)']:.0f}%")
 
             st.markdown("##### 🗓️ 월별 세부 리밸런싱 기록")
             display_bt_c = bt_results_c.copy()
