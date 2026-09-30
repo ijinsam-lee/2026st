@@ -208,6 +208,51 @@ def summarize_bt_c(bt):
     }
 
 # ============================================================
+# [2단계 개선] 전략 B 모멘텀 평활화 + 변동성 타깃팅
+#  적용 여부·수치는 화면의 '⚙️ 전략 B 모멘텀·변동성 설정' 패널에서 바꿉니다. (기본값: 기존 방식)
+#  cfg = (weight_mode, vol_on, vol_window_months, vol_target_pct)
+#  - weight_mode: "orig" 12-4-2-1 / "mild" 4-3-2-1 / "equal" 1-1-1-1  (각각 1M·3M·6M·12M 가중)
+#  - 변동성 타깃팅: 공격 모드에서 선택한 자산의 최근 N개월 월수익률 변동성(연환산)을 재서
+#    비중 = min(100%, 타깃 ÷ 실현변동성), 나머지는 현금. (레버리지 확대 없음)
+# ============================================================
+DEFAULT_B_CFG = ("orig", False, 6, 35.0)
+B_WEIGHTS = {"orig": (12, 4, 2, 1), "mild": (4, 3, 2, 1), "equal": (1, 1, 1, 1)}
+B_WEIGHT_LABELS = {"orig": "기존 12-4-2-1", "mild": "완화 4-3-2-1", "equal": "균등 1-1-1-1"}
+B_CFG = DEFAULT_B_CFG  # 화면 설정 패널에서 덮어씀
+
+def calc_b_score(r1, r3, r6, r12, mode="orig"):
+    w = B_WEIGHTS.get(mode, B_WEIGHTS["orig"])
+    return (w[0] * r1 + w[1] * r3 + w[2] * r6 + w[3] * r12) / float(sum(w))
+
+def calc_vol_scaled_weight(closes, cfg):
+    """월말 종가 시퀀스(마지막이 현재) → (투자 비중 %, 실현변동성 % 또는 nan). 변동성 타깃팅이 꺼져 있으면 (100, nan)."""
+    if not cfg[1]:
+        return 100.0, np.nan
+    arr = np.asarray(list(closes)[-(int(cfg[2]) + 1):], dtype=float)
+    if len(arr) < 4 or np.any(arr <= 0) or np.any(np.isnan(arr)):
+        return 100.0, np.nan
+    rets = arr[1:] / arr[:-1] - 1
+    vol = rets.std(ddof=1) * np.sqrt(12) * 100
+    if not (vol > 0):
+        return 100.0, np.nan
+    return float(min(100.0, cfg[3] / vol * 100.0)), float(vol)
+
+def summarize_bt_b(bt):
+    """전략 B 요약: C 요약 지표 + 평균 투자 비중, 연 턴오버."""
+    sm = summarize_bt_c(bt)
+    if sm is None:
+        return None
+    allocs = list(bt["alloc"])
+    inv = [sum(w for t, w in a.items() if t != "CASH (현금)") for a in allocs]
+    sm["평균 투자 비중 (%)"] = float(np.mean(inv))
+    turn = []
+    for prev, cur in zip(allocs[:-1], allocs[1:]):
+        keys = set(prev) | set(cur)
+        turn.append(0.5 * sum(abs(cur.get(k, 0.0) - prev.get(k, 0.0)) for k in keys))
+    sm["연 턴오버 (%)"] = float(np.mean(turn) * 12) if turn else 0.0
+    return sm
+
+# ============================================================
 # 전략 A 실시간 백테스트 엔진 (TIP 11M 이동평균 카나리아 + 공격 Top4/방어 Top1 로테이션)
 # ============================================================
 @st.cache_data(ttl=3600)
@@ -311,7 +356,7 @@ def run_backtest_strategy_a_full(monthly_px):
 # 전략 B 실시간 백테스트 엔진 (TIP 1-3-6-9-12M 모멘텀 카나리아 + 레버리지 몰빵)
 # ============================================================
 @st.cache_data(ttl=3600)
-def run_backtest_strategy_b_full(monthly_px):
+def run_backtest_strategy_b_full(monthly_px, b_cfg=DEFAULT_B_CFG):
     records = []
     nav = 100.0
     peak = 100.0
@@ -333,11 +378,15 @@ def run_backtest_strategy_b_full(monthly_px):
                 if t in monthly_px.columns:
                     rets = calc_momentum_a(monthly_px[t], i, [1, 3, 6, 12])
                     if not np.isnan(rets[12]):
-                        score = (12 * rets[1] + 4 * rets[3] + 2 * rets[6] + rets[12]) / 19
+                        score = calc_b_score(rets[1], rets[3], rets[6], rets[12], b_cfg[0])
                         scores.append((t, score))
             if scores:
                 scores.sort(key=lambda x: x[1], reverse=True)
-                alloc[scores[0][0]] = 100.0
+                top_b = scores[0][0]
+                vol_w, _vol = calc_vol_scaled_weight(monthly_px[top_b].iloc[max(0, i - int(b_cfg[2])):i + 1].tolist(), b_cfg)
+                alloc[top_b] = vol_w
+                if vol_w < 99.999:
+                    alloc["CASH (현금)"] = 100.0 - vol_w
             else:
                 alloc["CASH (현금)"] = 100.0
         else:
@@ -375,7 +424,7 @@ def run_backtest_strategy_b_full(monthly_px):
             "nav": nav,
             "monthly_return": port_ret * 100,
             "drawdown": dd,
-            "weights_str": ", ".join([f"{t} {w}%" for t, w in alloc.items() if w > 0]),
+            "weights_str": ", ".join([f"{t} {round(w, 1)}%" for t, w in alloc.items() if w > 0]),
             "alloc": dict(alloc),
         })
 
@@ -478,9 +527,9 @@ def run_backtest_strategy_c_full(monthly_px, spy_divs, dy_cfg=DEFAULT_DY_CFG):
 # 2026 혼합전략 백테스트 엔진 (전략A + 전략B + 전략C 각 33.33% 동일비중 혼합)
 # ============================================================
 @st.cache_data(ttl=3600)
-def run_backtest_strategy_mix_full(monthly_px, spy_divs, dy_cfg=DEFAULT_DY_CFG):
+def run_backtest_strategy_mix_full(monthly_px, spy_divs, dy_cfg=DEFAULT_DY_CFG, b_cfg=DEFAULT_B_CFG):
     bt_a = run_backtest_strategy_a_full(monthly_px)
-    bt_b = run_backtest_strategy_b_full(monthly_px)
+    bt_b = run_backtest_strategy_b_full(monthly_px, b_cfg=b_cfg)
     bt_c = run_backtest_strategy_c_full(monthly_px, spy_divs, dy_cfg=dy_cfg)
 
     if bt_a.empty or bt_b.empty or bt_c.empty:
@@ -553,9 +602,10 @@ def run_backtest_strategy_mix_improved_full(
     apply_vix_dampening=False, vix_threshold=25.0,
     apply_stop_loss=False, stop_loss_pct=-7.0,
     dy_cfg=DEFAULT_DY_CFG,
+    b_cfg=DEFAULT_B_CFG,
 ):
     bt_a = run_backtest_strategy_a_full(monthly_px)
-    bt_b = run_backtest_strategy_b_full(monthly_px)
+    bt_b = run_backtest_strategy_b_full(monthly_px, b_cfg=b_cfg)
     bt_c = run_backtest_strategy_c_full(monthly_px, spy_divs, dy_cfg=dy_cfg)
 
     if bt_a.empty or bt_b.empty or bt_c.empty:
@@ -965,7 +1015,7 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
 
         score_a_off = (r1 + r3 + r6 + r12) / 4
         score_a_def = (r1 + r3 + r6 + r9 + r12) / 5
-        score_b_off = (r1 * 12 + r3 * 4 + r6 * 2 + r12 * 1) / 19
+        score_b_off = calc_b_score(r1, r3, r6, r12, B_CFG[0])
         score_b_def_simple = (r1 + r3 + r6 + r9 + r12) / 5
 
         return {
@@ -1028,7 +1078,11 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
                 off_scores.append((t, ticker_metrics[t]["B_공격스코어"]))
         if off_scores:
             off_scores.sort(key=lambda x: x[1], reverse=True)
-            alloc_b_hist[off_scores[0][0]] = 100.0
+            _top_bh = off_scores[0][0]
+            _w_bh, _ = calc_vol_scaled_weight(monthly_prices[_top_bh], B_CFG)
+            alloc_b_hist[_top_bh] = _w_bh
+            if _w_bh < 99.999:
+                alloc_b_hist["CASH (현금)"] = 100.0 - _w_bh
         else:
             alloc_b_hist["CASH (현금)"] = 100.0
     else:
@@ -1153,6 +1207,26 @@ else:
         int(_z_window), float(_z_thr), float(_fixed_thr),
     )
 
+    # ---- 전략 B 모멘텀·변동성 설정 (2단계 개선 적용 여부 / 수치) ----
+    with st.expander("⚙️ 전략 B 모멘텀·변동성 설정 (2단계 개선 적용 여부)", expanded=False):
+        _bw_lbl = st.radio(
+            "공격 모멘텀 가중치 (1M-3M-6M-12M)",
+            [B_WEIGHT_LABELS["orig"], B_WEIGHT_LABELS["mild"], B_WEIGHT_LABELS["equal"]],
+            index=0, horizontal=True, key="b_weight_radio",
+        )
+        _bv_on = st.checkbox("변동성 타깃팅 적용 (공격 모드 비중 축소)", value=False, key="b_vol_on")
+        _bc1, _bc2 = st.columns(2)
+        _bv_win = _bc1.selectbox("실현변동성 계산 기간 (개월)", [3, 6, 12], index=1, key="b_vol_window")
+        _bv_tgt = _bc2.number_input("타깃 변동성 (연 %)", min_value=10.0, max_value=100.0, value=35.0, step=5.0, key="b_vol_target")
+        st.caption("설정은 실시간 신호, 과거 월말 포트폴리오, 혼합전략·전략 B 백테스트에 모두 적용됩니다. 전/후 성과 비교와 민감도는 '⚡ 전략 B' 탭에 있습니다.")
+    _bw_mode = [k for k, v in B_WEIGHT_LABELS.items() if v == _bw_lbl][0]
+    B_CFG = (_bw_mode, bool(_bv_on), int(_bv_win), float(_bv_tgt))
+
+    if B_CFG[0] != "orig":  # 실시간 B 공격 스코어를 선택한 가중치로 재계산
+        df_all["B_공격스코어"] = df_all.apply(
+            lambda r: round(calc_b_score(r["1M"], r["3M"], r["6M"], r["12M"], B_CFG[0]), 2), axis=1)
+        data_dict = df_all.set_index("Ticker").to_dict(orient="index")
+
     realtime_dy = get_sp500_dividend_yield()
     _dy_tbl_live = get_spy_dy_table(DY_CFG[1]) if DY_CFG[0] == "zscore" else pd.DataFrame()
     dy_z_live = float(_dy_tbl_live["z"].iloc[-1]) if (not _dy_tbl_live.empty and pd.notna(_dy_tbl_live["z"].iloc[-1])) else np.nan
@@ -1211,12 +1285,17 @@ else:
 
     # [전략 B 할당 산출]
     alloc_b = {}
+    b_vol_info = None
     if is_attack_b:
         df_off_b = df_all[df_all["Ticker"].isin(OFFENSIVE_B)].copy()
         if not df_off_b.empty:
             df_off_b = df_off_b.sort_values(by="B_공격스코어", ascending=False)
             top_1_b = df_off_b.iloc[0]
-            alloc_b[top_1_b["Ticker"]] = 100.0
+            _w_b, _vol_b = calc_vol_scaled_weight(top_1_b["raw_closes"], B_CFG)
+            alloc_b[top_1_b["Ticker"]] = _w_b
+            if _w_b < 99.999:
+                alloc_b["CASH (현금)"] = 100.0 - _w_b
+            b_vol_info = (top_1_b["Ticker"], _vol_b, _w_b)
         else:
             alloc_b["CASH (현금)"] = 100.0
     else:
@@ -1329,6 +1408,7 @@ else:
             $$\\text{Defensive Momentum} = \\frac{R_1 + R_3 + R_6 + R_9 + R_{12}}{5}$$
             3. **가중 평균 모멘텀 스코어** (전략 B 공격형): 레버리지 특성상 최근 수익률에 높은 가중치 부여
             $$\\text{Weighted Momentum} = \\frac{12R_1 + 4R_3 + 2R_6 + R_{12}}{19}$$
+            ※ 위는 기존(기본) 공식입니다. '⚙️ 전략 B 모멘텀·변동성 설정'에서 완화(4-3-2-1)·균등(1-1-1-1) 가중과 변동성 타깃팅을 선택할 수 있습니다.
 
             #### 🔁 리밸런싱 프로세스
             1. **카나리아 모니터링**: 매월 말 TIP 가격·모멘텀과 S&P 500 배당수익률을 통해 각 전략의 공격/방어 신호를 산출합니다.
@@ -1551,10 +1631,10 @@ else:
                         apply_cap=apply_cap_mix, weight_cap=25.0,
                         apply_vix_dampening=apply_vix_mix, vix_threshold=25.0,
                         apply_stop_loss=apply_stop_mix, stop_loss_pct=-7.0,
-                        dy_cfg=DY_CFG,
+                        dy_cfg=DY_CFG, b_cfg=B_CFG,
                     )
                 else:
-                    bt_results_mix = run_backtest_strategy_mix_full(monthly_px_mix, spy_divs_mix, dy_cfg=DY_CFG)
+                    bt_results_mix = run_backtest_strategy_mix_full(monthly_px_mix, spy_divs_mix, dy_cfg=DY_CFG, b_cfg=B_CFG)
                 bt_ok_mix = len(bt_results_mix) > 0
             except Exception as e:
                 st.error(f"2026 혼합전략 백테스트 데이터 로딩 중 오류가 발생했습니다: {e}")
@@ -2407,6 +2487,7 @@ else:
                 * 대상 자산: `TYD, UPRO, VNQ`
                 * 가중 모멘텀 스코어(최근 수익률에 높은 가중치 부여):
                 $$\\text{Weighted Momentum} = \\frac{12 R_1 + 4 R_3 + 2 R_6 + R_{12}}{19}$$
+                ※ 위는 기존(기본) 공식입니다. '⚙️ 전략 B 모멘텀·변동성 설정'에서 완화(4-3-2-1)·균등(1-1-1-1) 가중과 변동성 타깃팅을 선택할 수 있습니다.
                 * 행동: 스코어 **1위 자산**에 **100% 몰빵 투자**합니다. (컷오프 없음)
             * **방어 신호 (인버스/방어 자산 3개 중 선택)**
                 * 대상 자산: `DOG, RWM, TBF`
@@ -2433,18 +2514,23 @@ else:
             df_off_b = df_off_b.sort_values(by="B_공격스코어", ascending=False)
             
             st.write("**공격 자산 순위 (1-3-6-12M 가중 평균 모멘텀):**")
-            st.caption("가중치 공식: $\\frac{12 \\cdot R_1 + 4 \\cdot R_3 + 2 \\cdot R_6 + R_{12}}{19}$")
+            st.caption(f"현재 가중치 설정: {B_WEIGHT_LABELS[B_CFG[0]]} (1M·3M·6M·12M) — '⚙️ 전략 B 모멘텀·변동성 설정'에서 변경")
             st.dataframe(
                 df_off_b[["Ticker", "현재가", "1M", "3M", "6M", "12M", "B_공격스코어"]]
                 .rename(columns={"B_공격스코어": "가중 모멘텀 스코어"}),
                 use_container_width=True, hide_index=True
             )
             
-            st.subheader("🎯 최종 포트폴리오 가이드 (100% 집중 투자)")
-            for t, _ in alloc_b.items():
-                p = data_dict.get(t, {}).get("현재가", 0.0)
-                s = data_dict.get(t, {}).get("B_공격스코어", 0.0)
-                st.info(f"🏆 **{t}** : 비중 **100%** (현재가: ${p:.2f}, 가중 모멘텀: {s:.2f}%)")
+            st.subheader("🎯 최종 포트폴리오 가이드")
+            if B_CFG[1] and b_vol_info and pd.notna(b_vol_info[1]):
+                st.caption(f"변동성 타깃팅: {b_vol_info[0]} 최근 {B_CFG[2]}개월 실현변동성 {b_vol_info[1]:.1f}% → 타깃 {B_CFG[3]:.0f}% 기준 투자 비중 {b_vol_info[2]:.1f}% (나머지 현금)")
+            for t, w_b in alloc_b.items():
+                if t == "CASH (현금)":
+                    st.error(f"🚨 **현금(CASH) 보유 : 비중 {w_b:.1f}%**")
+                else:
+                    p = data_dict.get(t, {}).get("현재가", 0.0)
+                    sc = data_dict.get(t, {}).get("B_공격스코어", 0.0)
+                    st.info(f"🏆 **{t}** : 비중 **{w_b:.1f}%** (현재가: ${p:.2f}, 가중 모멘텀: {sc:.2f}%)")
         else:
             st.warning("🛡️ **현재 모드: 방어 자산 모드** - 인버스 자산을 활용하여 하락장에 방어 베팅합니다.")
             df_def_b = df_all[df_all["Ticker"].isin(DEFENSIVE_B)].copy()
@@ -2487,7 +2573,7 @@ else:
                 bt_tickers_b = sorted(set(OFFENSIVE_B + DEFENSIVE_B + ["TIP", "QQQ"]))
                 daily_px_b = get_daily_price_history_a(bt_tickers_b, start=bt_start_b)
                 monthly_px_b = to_monthly_last_a(daily_px_b)
-                bt_results_b = run_backtest_strategy_b_full(monthly_px_b)
+                bt_results_b = run_backtest_strategy_b_full(monthly_px_b, b_cfg=B_CFG)
                 bt_ok_b = len(bt_results_b) > 0
             except Exception as e:
                 st.error(f"전략 B 백테스트 데이터 로딩 중 오류가 발생했습니다: {e}")
@@ -2835,6 +2921,44 @@ else:
 
 
 
+
+            st.markdown("---")
+            st.markdown("### 🔬 2단계 개선 전/후 비교 (모멘텀 평활화 · 변동성 타깃팅)")
+            _cmp_w = B_CFG[0] if B_CFG[0] != "orig" else "mild"
+            st.caption(f"같은 기간·같은 자산군에서 개선 요소만 바꿔 비교합니다. 가중치는 설정 패널 선택값(기존이면 완화 4-3-2-1)을, 변동성 타깃팅은 패널의 기간·타깃({B_CFG[2]}개월, {B_CFG[3]:.0f}%)을 사용합니다.")
+            _cmp_cfgs_b = {
+                "① 기존": ("orig", False, B_CFG[2], B_CFG[3]),
+                f"② 가중 {B_WEIGHT_LABELS[_cmp_w]}만": (_cmp_w, False, B_CFG[2], B_CFG[3]),
+                "③ 변동성 타깃만": ("orig", True, B_CFG[2], B_CFG[3]),
+                "④ 둘 다": (_cmp_w, True, B_CFG[2], B_CFG[3]),
+            }
+            _cmp_res_b = {k: run_backtest_strategy_b_full(monthly_px_b, b_cfg=v) for k, v in _cmp_cfgs_b.items()}
+            _cmp_rows_b = []
+            for _k, _bt in _cmp_res_b.items():
+                _sm = summarize_bt_b(_bt)
+                if _sm:
+                    _cmp_rows_b.append({"방식": _k, **_sm})
+            if _cmp_rows_b:
+                st.dataframe(pd.DataFrame(_cmp_rows_b).round(2), use_container_width=True, hide_index=True)
+                st.caption("비중이 줄면 CAGR도 함께 낮아지는 것이 보통입니다. MDD·변동성·샤프가 얼마나 개선되는지와 함께 판단하세요.")
+                _nav_cmp_b = pd.concat({_k.split(" ")[0]: _bt.set_index("date")["nav"] for _k, _bt in _cmp_res_b.items() if len(_bt) > 0}, axis=1)
+                st.line_chart(_nav_cmp_b)
+
+            with st.expander("🧪 수치 적정성 점검 (가중치 × 타깃 변동성 민감도)", expanded=False):
+                st.caption(f"각 칸은 해당 설정으로 전략 B를 다시 백테스트한 결과입니다(변동성 계산 {B_CFG[2]}개월). '끄기'는 변동성 타깃팅 미적용입니다. 한 칸만 유독 좋은 결과보다 인접 칸들도 비슷한 구간을 믿으세요.")
+                _tgts = [None, 25.0, 30.0, 35.0, 40.0, 50.0, 60.0]
+                _grid_b = {"CAGR (%)": {}, "MDD (%)": {}, "샤프": {}}
+                for _wm, _wl in B_WEIGHT_LABELS.items():
+                    for _g in _grid_b:
+                        _grid_b[_g][_wl] = {}
+                    for _tg in _tgts:
+                        _cfg_g = (_wm, _tg is not None, B_CFG[2], _tg if _tg is not None else B_CFG[3])
+                        _smg = summarize_bt_b(run_backtest_strategy_b_full(monthly_px_b, b_cfg=_cfg_g))
+                        for _g in _grid_b:
+                            _grid_b[_g][_wl]["끄기" if _tg is None else f"{_tg:.0f}%"] = _smg[_g] if _smg else np.nan
+                for _g, _d in _grid_b.items():
+                    st.markdown(f"**{_g}**  (행: 가중치 / 열: 타깃 변동성)")
+                    st.dataframe(pd.DataFrame(_d).T.round(2), use_container_width=True)
 
             st.markdown("##### 🗓️ 월별 세부 리밸런싱 기록")
             display_bt_b = bt_results_b.copy()
