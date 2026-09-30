@@ -7,7 +7,6 @@ import datetime
 
 st.set_page_config(page_title="동적 자산배분 대시보드", layout="centered", initial_sidebar_state="collapsed")
 
-# 프리미엄 그레이/슬레이트 톤 스타일 및 탭 선택바 강조 스타일 주입
 st.markdown("""
 <style>
 /* 글로벌 배경화면 및 메인 톤 조정 */
@@ -104,7 +103,6 @@ st.markdown("""
 st.title("📈 동적 자산배분 대시보드")
 st.caption("야후 파이낸스 실시간 데이터 기반 수시 리밸런싱 가이드 (2026년 전략 고도화 버전)")
 
-# --- 1. 자산군 정의 ---
 OFFENSIVE_A = ["QQQ", "FEZ", "GLD", "IBB", "SMH", "EEM", "XLK", "LIT", "XLE", "UBT", "XLV", "QTUM"]
 DEFENSIVE_A = ["BIL", "IEF", "AGG", "HYG", "TBF"]
 
@@ -116,11 +114,8 @@ DEFENSIVE_C = ["GLD", "PDBC", "OILK", "SHY", "TLT"]
 
 ALL_TICKERS = list(set(["TIP", "SPY"] + OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C + ["SCHD", "QQQM", "IGV", "XLU", "JEPI", "TQQQ", "SOXL", "DIA", "IWM", "XLF"]))
 
-# ============================================================
-# 데이터 다운로드 및 기초 함수
-# ============================================================
 @st.cache_data(ttl=3600)
-def get_daily_price_history_a(tickers, start="2015-01-01"):
+def get_daily_price_history_a(tickers, start="2018-01-01"):
     df = yf.download(tickers, start=start, interval="1d", progress=False, auto_adjust=True)
     if isinstance(df.columns, pd.MultiIndex):
         if "Close" in df.columns.levels[0]:
@@ -157,9 +152,6 @@ def get_spy_dividend_history():
     except Exception:
         return pd.Series(dtype=float)
 
-# ============================================================
-# 전략 C: S&P 500 배당수익률 동적 롤링 Z-Score 계산 모듈 (1단계 고도화)
-# ============================================================
 def calculate_spy_dividend_yield_series(monthly_px, spy_divs):
     """
     매월 말 기준 직전 12개월(365일) 누적 배당금을 당월 종가로 나누어 배당수익률(%) 시계열 생성
@@ -186,7 +178,7 @@ def calculate_spy_dividend_yield_series(monthly_px, spy_divs):
 
 def get_dynamic_zscore_at_index(dy_series, idx_pos, window=36, min_periods=12):
     """
-    최근 36개월 롤링 윈도우 기반 Z-Score 산출
+    최근 36개월 롤링 윈도우 기반 S&P 500 배당수익률 Z-Score 산출
     Z_DY = (DY_t - Mean_36) / Std_36
     """
     if idx_pos < 0 or pd.isna(dy_series.iloc[idx_pos]):
@@ -209,9 +201,6 @@ def get_dynamic_zscore_at_index(dy_series, idx_pos, window=36, min_periods=12):
         
     return z_score, curr_dy, mean_dy
 
-# ============================================================
-# 전략 A 실시간 백테스트 엔진
-# ============================================================
 @st.cache_data(ttl=3600)
 def run_backtest_strategy_a_full(monthly_px):
     records = []
@@ -281,9 +270,6 @@ def run_backtest_strategy_a_full(monthly_px):
 
     return pd.DataFrame(records)
 
-# ============================================================
-# 전략 B 실시간 백테스트 엔진
-# ============================================================
 @st.cache_data(ttl=3600)
 def run_backtest_strategy_b_full(monthly_px):
     records = []
@@ -355,9 +341,6 @@ def run_backtest_strategy_b_full(monthly_px):
 
     return pd.DataFrame(records)
 
-# ============================================================
-# 전략 C 실시간 백테스트 엔진 (동적 Z-Score 체계 적용)
-# ============================================================
 @st.cache_data(ttl=3600)
 def run_backtest_strategy_c_full(monthly_px, spy_divs, z_threshold=-0.5):
     records = []
@@ -373,7 +356,6 @@ def run_backtest_strategy_c_full(monthly_px, spy_divs, z_threshold=-0.5):
         # 36개월 롤링 동적 Z-Score 산출
         z_val, dy_curr, _ = get_dynamic_zscore_at_index(dy_series, i, window=36, min_periods=12)
         if pd.isna(z_val):
-            # 워밍업 초기에는 절대 기준선(1.33%) 폴백
             is_attack = dy_curr > 1.33 if pd.notna(dy_curr) else False
         else:
             is_attack = z_val > z_threshold
@@ -421,9 +403,10 @@ def run_backtest_strategy_c_full(monthly_px, spy_divs, z_threshold=-0.5):
         peak = max(peak, nav)
         dd = (nav / peak - 1) * 100
 
+        z_label = f"Z:{z_val:.2f}" if pd.notna(z_val) else f"DY:{dy_curr:.2f}%"
         records.append({
             "date": monthly_px.index[i + 1],
-            "mode": f"공격 (Offensive, Z:{z_val:.2f})" if is_attack else f"방어 (Defensive, Z:{z_val:.2f})",
+            "mode": f"공격 (Offensive, {z_label})" if is_attack else f"방어 (Defensive, {z_label})",
             "nav": nav,
             "monthly_return": port_ret * 100,
             "drawdown": dd,
@@ -433,9 +416,6 @@ def run_backtest_strategy_c_full(monthly_px, spy_divs, z_threshold=-0.5):
 
     return pd.DataFrame(records)
 
-# ============================================================
-# 2026 혼합전략 백테스트 엔진 (기본형)
-# ============================================================
 @st.cache_data(ttl=3600)
 def run_backtest_strategy_mix_full(monthly_px, spy_divs):
     bt_a = run_backtest_strategy_a_full(monthly_px)
@@ -489,9 +469,6 @@ def run_backtest_strategy_mix_full(monthly_px, spy_divs):
 
     return pd.DataFrame(records)
 
-# ============================================================
-# 2026 혼합전략 [개선판] 백테스트 엔진
-# ============================================================
 @st.cache_data(ttl=3600)
 def run_backtest_strategy_mix_improved_full(
     monthly_px, spy_divs, daily_px=None,
@@ -631,7 +608,6 @@ def run_backtest_strategy_mix_improved_full(
 
     return pd.DataFrame(records)
 
-# 관심매크로 지표 정의 및 심볼 매핑
 MACRO_TICKERS = {
     "미국 10년물 국채 금리": "^TNX",
     "미국 30년물 국채 금리": "^TYX",
@@ -726,9 +702,6 @@ def get_usd_krw_rate():
 
 @st.cache_data(ttl=3600)
 def get_sp500_dividend_and_zscore():
-    """
-    실시간 SPY 배당수익률 및 과거 36개월 롤링 Z-Score 계산
-    """
     dy_curr = 1.32
     z_score = 0.0
     mean_36 = 1.32
@@ -741,7 +714,6 @@ def get_sp500_dividend_and_zscore():
             if divs.index.tz is not None:
                 divs.index = divs.index.tz_localize(None)
                 
-            # 과거 4년 월간 종가 가져오기
             hist_monthly = spy.history(period="5y", interval="1mo")
             if not hist_monthly.empty and "Close" in hist_monthly.columns:
                 m_closes = hist_monthly["Close"].dropna()
@@ -983,7 +955,7 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
         else:
             alloc_b_hist["CASH (현금)"] = 100.0
 
-    # 3. 전략 C 배분 (동적 Z-Score 체계 적용)
+    # 3. 전략 C 배분 (1단계 개선: 동적 Z-Score 체계 적용)
     dy_val = 1.32
     z_score_val = 0.0
     if not spy_divs.empty and "SPY" in monthly_prices:
@@ -1014,7 +986,6 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
                 s_36 = np.std(sub_36, ddof=1) if len(sub_36) > 1 else 0.15
                 z_score_val = (dy_val - m_36) / s_36 if s_36 > 1e-6 else 0.0
 
-    # 동적 Z-Score 기준선 (-0.5 초과 시 공격)
     is_attack_c_hist = z_score_val > -0.5
 
     alloc_c_hist = {}
@@ -1043,7 +1014,6 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
         else:
             alloc_c_hist["CASH (현금)"] = 100.0
 
-    # 혼합 포트폴리오 비중 병합
     mixed_portfolio = {}
     for t, w in alloc_a_hist.items():
         mixed_portfolio[t] = mixed_portfolio.get(t, 0.0) + (w / 100.0) * 33.333
@@ -1063,10 +1033,9 @@ if df_all.empty or "TIP" not in df_all["Ticker"].values:
 else:
     data_dict = df_all.set_index("Ticker").to_dict(orient="index")
     
-    with st.spinner("과거 포트폴리오 데이터를 로딩 및 연산 중..."):
+    with st.spinner("지난 12개월(최근 1년) 월말 포트폴리오 데이터를 로딩 및 역동 연산 중..."):
         hist_prices, spy_divs_hist = get_historical_simulation_data(ALL_TICKERS)
     
-    # TIP 데이터 추출
     tip_data = data_dict.get("TIP", {})
     tip_closes = tip_data.get("raw_closes", [])
     tip_current = tip_data.get("현재가", 0.0)
@@ -1076,11 +1045,9 @@ else:
     tip_ratio = tip_current / tip_ma11 if tip_ma11 > 0 else 1.0
     is_attack_a = tip_ratio > 1.0
 
-    # 전략 B 카나리아 신호
     tip_score_b = (tip_data.get("1M", 0.0) + tip_data.get("3M", 0.0) + tip_data.get("6M", 0.0) + tip_data.get("9M", 0.0) + tip_data.get("12M", 0.0)) / 5
     is_attack_b = tip_score_b > 0
 
-    # 전략 C: 동적 Z-Score 카나리아 신호 (1단계 고도화 반영)
     realtime_dy, realtime_z, mean_dy_36, std_dy_36 = get_sp500_dividend_and_zscore()
     is_attack_c = realtime_z > -0.5
     
@@ -1106,21 +1073,17 @@ else:
     with tab_calc:
         c_calc = st.container()
 
-    # [전략 A 할당 산출]
     alloc_a = {}
     if is_attack_a:
-        df_off_a = df_all[df_all["Ticker"].isin(OFFENSIVE_A)].copy()
+        df_off_a = df_all[df_all["Ticker"].isin(OFFENSIVE_A)].copy().sort_values(by="A_공격스코어", ascending=False)
         if not df_off_a.empty:
-            df_off_a = df_off_a.sort_values(by="A_공격스코어", ascending=False)
-            top_4_a = df_off_a.head(4)
-            for _, r in top_4_a.iterrows():
+            for _, r in df_off_a.head(4).iterrows():
                 alloc_a[r["Ticker"]] = 25.0
         else:
             alloc_a["CASH (현금)"] = 100.0
     else:
-        df_def_a = df_all[df_all["Ticker"].isin(DEFENSIVE_A)].copy()
+        df_def_a = df_all[df_all["Ticker"].isin(DEFENSIVE_A)].copy().sort_values(by="A_방어스코어", ascending=False)
         if not df_def_a.empty:
-            df_def_a = df_def_a.sort_values(by="A_방어스코어", ascending=False)
             top_1_a = df_def_a.iloc[0]
             if top_1_a["A_방어스코어"] > 0:
                 alloc_a[top_1_a["Ticker"]] = 100.0
@@ -1129,20 +1092,16 @@ else:
         else:
             alloc_a["CASH (현금)"] = 100.0
 
-    # [전략 B 할당 산출]
     alloc_b = {}
     if is_attack_b:
-        df_off_b = df_all[df_all["Ticker"].isin(OFFENSIVE_B)].copy()
+        df_off_b = df_all[df_all["Ticker"].isin(OFFENSIVE_B)].copy().sort_values(by="B_공격스코어", ascending=False)
         if not df_off_b.empty:
-            df_off_b = df_off_b.sort_values(by="B_공격스코어", ascending=False)
-            top_1_b = df_off_b.iloc[0]
-            alloc_b[top_1_b["Ticker"]] = 100.0
+            alloc_b[df_off_b.iloc[0]["Ticker"]] = 100.0
         else:
             alloc_b["CASH (현금)"] = 100.0
     else:
-        df_def_b = df_all[df_all["Ticker"].isin(DEFENSIVE_B)].copy()
+        df_def_b = df_all[df_all["Ticker"].isin(DEFENSIVE_B)].copy().sort_values(by="5M", ascending=False)
         if not df_def_b.empty:
-            df_def_b = df_def_b.sort_values(by="5M", ascending=False)
             top_1_b_def = df_def_b.iloc[0]
             if top_1_b_def["B_단순모멘텀"] > 0:
                 alloc_b[top_1_b_def["Ticker"]] = 100.0
@@ -1151,20 +1110,16 @@ else:
         else:
             alloc_b["CASH (현금)"] = 100.0
 
-    # [전략 C 할당 산출 - 동적 Z-Score 기반]
     alloc_c = {}
     if is_attack_c:
-        df_off_c = df_all[df_all["Ticker"].isin(OFFENSIVE_C)].copy()
+        df_off_c = df_all[df_all["Ticker"].isin(OFFENSIVE_C)].copy().sort_values(by="A_공격스코어", ascending=False)
         if not df_off_c.empty:
-            df_off_c = df_off_c.sort_values(by="A_공격스코어", ascending=False)
-            top_1_c = df_off_c.iloc[0]
-            alloc_c[top_1_c["Ticker"]] = 100.0
+            alloc_c[df_off_c.iloc[0]["Ticker"]] = 100.0
         else:
             alloc_c["CASH (현금)"] = 100.0
     else:
-        df_def_c = df_all[df_all["Ticker"].isin(DEFENSIVE_C)].copy()
+        df_def_c = df_all[df_all["Ticker"].isin(DEFENSIVE_C)].copy().sort_values(by="A_방어스코어", ascending=False)
         if not df_def_c.empty:
-            df_def_c = df_def_c.sort_values(by="A_방어스코어", ascending=False)
             top_1_c_def = df_def_c.iloc[0]
             if top_1_c_def["A_방어스코어"] > 0:
                 alloc_c[top_1_c_def["Ticker"]] = 100.0
@@ -1180,7 +1135,6 @@ else:
         for ticker, asset_weight in alloc_dict.items():
             effective_weight = (asset_weight / 100.0) * strategy_weight
             combined_alloc[ticker] = combined_alloc.get(ticker, 0.0) + effective_weight
-            
             if ticker not in contributions:
                 contributions[ticker] = []
             contributions[ticker].append(f"{strategy_name} ({mode_status})")
@@ -1208,8 +1162,8 @@ else:
     with c_2026:
         st.header("🏆 2026년 혼합 전략")
         st.markdown(
-            "안정 지향의 **전략 A**, 고수익 레버리지의 **전략 B**, 동적 밸류에이션 로테이션 **전략 C**를 "
-            "각각 **$33.33\%$씩 동일 비중**으로 혼합하여 시장 전반의 변동성을 제어하는 2026년 추천 전략 모델입니다."
+            "안정 지향의 **전략 A**, 고수익 레버리지의 **전략 B**, 시황 로테이션인 **전략 C**를 "
+            "각각 **$33.33\%$씩 동일 비중**으로 혼합하여 시장 전반의 변동성을 완벽하게 제어하는 2026년 추천 전략 모델입니다."
         )
 
         with st.expander("📖 2026 동적 자산배분 혼합 전략 명세서 (작동원칙)", expanded=False):
@@ -1219,19 +1173,19 @@ else:
             성격이 서로 다른 3가지 동적 자산배분 전략을 각각 **33.33%의 동일 비중**으로 혼합합니다.
 
             ---
-            #### 🛡️ 전략 A: 대형 우량 자산 안정형 (33.33%)
+            #### 🛡️ 전략 A: 대형 우량 자산 안정형 (배분 비중 33.33%)
             * **카나리아**: TIP 현재가 vs 11개월 이동평균(11MA) — 현재가 > 11MA면 공격, 이하면 방어
             * **공격 자산군 (12개)**: `QQQ, FEZ, GLD, IBB, SMH, EEM, XLK, LIT, XLE, UBT, XLV, QTUM`
             * **방어 자산군 (5개)**: `BIL, IEF, AGG, HYG, TBF`
             * **운용 가이드**: 공격 시 모멘텀 상위 4종목에 각 25%씩 균등 분배. 방어 시 1위 자산에 100% 투자(음수면 현금 100%).
 
-            #### ⚡ 전략 B: 레버리지 공격형 (33.33%)
+            #### ⚡ 전략 B: 레버리지 공격형 (배분 비중 33.33%)
             * **카나리아**: TIP 1·3·6·9·12개월 단순평균 모멘텀 — 양수(> 0)면 공격, 이하면 방어
             * **공격 자산군 (3개)**: `TYD(미국채 3X), UPRO(S&P500 3X), VNQ(리츠)`
             * **방어 자산군 (3개)**: `DOG, RWM, TBF`
-            * **운용 가이드**: 공격 시 1·3·6·12개월 가중평균 모멘텀 1위 자산 100% 몰빵. 방어 시 5개월 수익률 1위 자산(음수면 현금 100%).
+            * **운용 가이드**: 공격 시 가중평균 모멘텀 1위 자산 100% 몰빵. 방어 시 5개월 수익률 1위 자산(음수면 현금 100%).
 
-            #### 🔄 전략 C: 배당 기반 섹터 로테이션 [고도화 반영] (33.33%)
+            #### 🔄 전략 C: 배당 기반 섹터 로테이션 [1단계 동적 Z-Score 고도화] (배분 비중 33.33%)
             * **카나리아**: **S&P 500 최근 36개월 롤링 배당수익률 Z-Score ($Z_{\\text{DY}}$)**
               $$Z_{\\text{DY}} = \\frac{\\text{DY}_t - \\mu_{36}}{\\sigma_{36}}$$
               * **공격 신호**: $Z_{\\text{DY}} > -0.5$ (역사적 추세 대비 정상 및 저평가 국면)
@@ -1398,15 +1352,16 @@ else:
                 key="bt_start_select_mix"
             )
             bt_start_mix = bt_start_label_mix.split(" ")[0]
-            st.markdown("**🛡️️ MDD 개선 로직 (옵션 설정)**")
+            st.markdown("**🛡️ MDD 개선 로직 (단계별 적용 — 개별 On/Off 가능)**")
             apply_cap_mix = st.checkbox("1단계: 단일 자산군 비중 상한(Cap 25%) 적용", value=False, key="apply_cap_mix")
-            apply_vix_mix = st.checkbox("2단계: 전략 B 변동성 동적 조절 (VIX > 25 시 레버리지 절반 축소)", value=False, key="apply_vix_mix")
-            apply_stop_mix = st.checkbox("3단계: 월중 하드스탑 (월중 낙폭 -7% 도달 시 전량 현금화)", value=False, key="apply_stop_mix")
+            apply_vix_mix = st.checkbox("2단계: 전략 B 변동성 동적 조절 (VIX > 25 시 레버리지 비중 절반 축소)", value=False, key="apply_vix_mix")
+            apply_stop_mix = st.checkbox("3단계: 월중 하드스탑 (월중 낙폭 -7% 도달 시 즉시 현금화)", value=False, key="apply_stop_mix")
+            st.caption("선택한 시작일 기준으로 2026 혼합전략 백테스트 시뮬레이션이 즉시 재계산됩니다.")
             st.markdown('</div>', unsafe_allow_html=True)
 
         use_improved_mix = apply_cap_mix or apply_vix_mix or apply_stop_mix
 
-        with st.spinner("2026 혼합전략 실시간 백테스트 엔진 구동 중... (전략 C 동적 Z-Score 연동)"):
+        with st.spinner("2026 혼합전략 실시간 백테스트 엔진 구동 중... (전략 C 동적 Z-Score 통합 연산)"):
             try:
                 bt_tickers_mix = sorted(set(
                     OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C
@@ -1433,6 +1388,13 @@ else:
             st.warning("백테스트 데이터가 부족하거나 오류가 있습니다. 잠시 후 다시 시도해 주세요.")
         else:
             st.caption(f"시뮬레이션 기간: {bt_results_mix['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_mix['date'].iloc[-1].strftime('%Y-%m')}")
+            if use_improved_mix:
+                applied_stages = []
+                if apply_cap_mix: applied_stages.append("1단계(비중상한)")
+                if apply_vix_mix: applied_stages.append("2단계(VIX완화)")
+                if apply_stop_mix: applied_stages.append("3단계(월중손절)")
+                st.success(f"🛡️ [개선판] {' + '.join(applied_stages)} 로직이 적용된 결과입니다.")
+
             total_days_mix = (bt_results_mix["date"].iloc[-1] - bt_results_mix["date"].iloc[0]).days
             total_years_mix = total_days_mix / 365.25 if total_days_mix > 0 else 1.0
             final_nav_mix = bt_results_mix["nav"].iloc[-1]
@@ -1470,8 +1432,287 @@ else:
             ).properties(height=350)
             st.altair_chart(nav_chart_mix, use_container_width=True)
 
-            # 월별 세부 리밸런싱 기록
-            st.markdown("##### 🗓️️ 월별 세부 리밸런싱 기록")
+            st.markdown("##### 📊 연도별 수익률 (%)")
+            yearly_df_mix = bt_results_mix.copy()
+            yearly_df_mix["year"] = yearly_df_mix["date"].dt.year
+            yearly_returns_mix = (
+                yearly_df_mix.groupby("year")["monthly_return"]
+                .apply(lambda x: (np.prod(1 + x / 100.0) - 1) * 100)
+                .reset_index(name="annual_return")
+            )
+            yearly_returns_mix["year_str"] = yearly_returns_mix["year"].astype(str)
+            yearly_returns_mix["series"] = "2026 혼합전략"
+            year_sort_order_mix = yearly_returns_mix["year_str"].tolist()
+
+            qqq_monthly_ret_mix = monthly_px_mix["QQQ"].pct_change().reindex(bt_results_mix["date"]) * 100
+            qqq_ret_df_mix = pd.DataFrame({
+                "date": bt_results_mix["date"].values,
+                "qqq_return": qqq_monthly_ret_mix.values,
+            })
+            qqq_ret_df_mix["year"] = pd.to_datetime(qqq_ret_df_mix["date"]).dt.year
+            qqq_yearly_mix = (
+                qqq_ret_df_mix.groupby("year")["qqq_return"]
+                .apply(lambda x: (np.prod(1 + x / 100.0) - 1) * 100)
+                .reset_index(name="annual_return")
+            )
+            qqq_yearly_mix["year_str"] = qqq_yearly_mix["year"].astype(str)
+            qqq_yearly_mix["series"] = "QQQ"
+
+            color_scale_mix = alt.Scale(domain=["2026 혼합전략", "QQQ"], range=["#0ea5e9", "#808080"])
+
+            annual_bar_mix = alt.Chart(yearly_returns_mix).mark_bar(size=28).encode(
+                x=alt.X("year_str:N", title="연도", sort=year_sort_order_mix),
+                y=alt.Y("annual_return:Q", title="수익률 (%)"),
+                color=alt.Color("series:N", scale=color_scale_mix, legend=alt.Legend(title=None, orient="bottom")),
+                tooltip=[
+                    alt.Tooltip("year_str:N", title="연도"),
+                    alt.Tooltip("annual_return:Q", title="수익률", format="+.2f"),
+                ],
+            )
+            annual_labels_mix = alt.Chart(yearly_returns_mix).mark_text(
+                dy=alt.expr("datum.annual_return >= 0 ? -8 : 14"), fontWeight="bold", fontSize=11, color="#0f172a"
+            ).encode(
+                x=alt.X("year_str:N", sort=year_sort_order_mix),
+                y=alt.Y("annual_return:Q"),
+                text=alt.Text("annual_return:Q", format="+.1f"),
+            )
+            qqq_points_mix = alt.Chart(qqq_yearly_mix).mark_point(
+                filled=True, size=110, stroke="white", strokeWidth=1.2
+            ).encode(
+                x=alt.X("year_str:N", sort=year_sort_order_mix),
+                y=alt.Y("annual_return:Q"),
+                color=alt.Color("series:N", scale=color_scale_mix, legend=alt.Legend(title=None, orient="bottom")),
+                tooltip=[
+                    alt.Tooltip("year_str:N", title="연도"),
+                    alt.Tooltip("annual_return:Q", title="QQQ 수익률", format="+.2f"),
+                ],
+            )
+            st.altair_chart((annual_bar_mix + annual_labels_mix + qqq_points_mix).properties(height=320), use_container_width=True)
+
+            st.markdown("##### 🗓️ 월별 수익률 (%)")
+            monthly_df_mix = bt_results_mix.copy()
+            monthly_df_mix["year"] = monthly_df_mix["date"].dt.year
+            monthly_df_mix["month"] = monthly_df_mix["date"].dt.month
+
+            month_labels_mix = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
+                                7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"}
+            monthly_df_mix["month_label"] = monthly_df_mix["month"].map(month_labels_mix)
+            monthly_df_mix["year_label"] = monthly_df_mix["year"].astype(str)
+
+            avg_by_month_mix = monthly_df_mix.groupby(["month", "month_label"])["monthly_return"].mean().reset_index()
+            avg_by_month_mix["year_label"] = "평균"
+
+            heat_df_mix = pd.concat([
+                monthly_df_mix[["year_label", "month", "month_label", "monthly_return"]],
+                avg_by_month_mix[["year_label", "month", "month_label", "monthly_return"]],
+            ], ignore_index=True)
+
+            year_sort_order_full_mix = [str(y) for y in sorted(monthly_df_mix["year"].unique())] + ["평균"]
+            month_sort_order_mix = [month_labels_mix[m] for m in range(1, 13)]
+
+            heat_rect_mix = alt.Chart(heat_df_mix).mark_rect(stroke="white", strokeWidth=1.5).encode(
+                x=alt.X("month_label:N", title=None, sort=month_sort_order_mix),
+                y=alt.Y("year_label:N", title=None, sort=year_sort_order_full_mix),
+                color=alt.Color(
+                    "monthly_return:Q",
+                    scale=alt.Scale(
+                        type="threshold",
+                        domain=[-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5],
+                        range=["#cf6265", "#e67f82", "#ecaaab", "#f6d4d5", "#fafbff",
+                               "#d7e4da", "#accab2", "#82ae8b", "#599265"],
+                    ),
+                    legend=alt.Legend(title="수익률 (%)", orient="bottom", gradientLength=220),
+                ),
+                tooltip=[
+                    alt.Tooltip("year_label:N", title="연도"),
+                    alt.Tooltip("month_label:N", title="월"),
+                    alt.Tooltip("monthly_return:Q", title="수익률", format="+.2f"),
+                ],
+            )
+            heat_text_mix = alt.Chart(heat_df_mix).mark_text(fontSize=10, fontWeight="bold").encode(
+                x=alt.X("month_label:N", sort=month_sort_order_mix),
+                y=alt.Y("year_label:N", sort=year_sort_order_full_mix),
+                text=alt.Text("monthly_return:Q", format="+.1f"),
+                color=alt.value("#334155"),
+            )
+            st.altair_chart((heat_rect_mix + heat_text_mix).properties(height=32 * len(year_sort_order_full_mix) + 80), use_container_width=True)
+
+            st.markdown("##### 📉 낙폭 (Drawdown) 히스토리")
+            dd_chart_mix = alt.Chart(chart_df_mix).mark_area(color="#fecaca", opacity=0.8).encode(
+                x=alt.X("date_str:N", sort=None, title="년-월"),
+                y=alt.Y("drawdown:Q", title="MDD (%)"),
+                tooltip=["date_str", "drawdown"]
+            ).properties(height=200)
+            st.altair_chart(dd_chart_mix, use_container_width=True)
+
+            st.markdown("##### 🚨 포트폴리오 드로우다운 Top 10")
+            dd_vals_mix = bt_results_mix["drawdown"].values
+            dd_dates_mix = bt_results_mix["date"].values
+            n_mix = len(dd_vals_mix)
+            episodes_mix = []
+            i_ep = 0
+            while i_ep < n_mix:
+                if dd_vals_mix[i_ep] < -0.001:
+                    start_i = i_ep
+                    j_ep = i_ep
+                    min_val = dd_vals_mix[i_ep]
+                    min_idx = i_ep
+                    while j_ep < n_mix and dd_vals_mix[j_ep] < -0.001:
+                        if dd_vals_mix[j_ep] < min_val:
+                            min_val = dd_vals_mix[j_ep]
+                            min_idx = j_ep
+                        j_ep += 1
+                    episodes_mix.append({
+                        "시작": pd.Timestamp(dd_dates_mix[start_i]).strftime("%Y/%m"),
+                        "종료": pd.Timestamp(dd_dates_mix[min_idx]).strftime("%Y/%m"),
+                        "드로우다운": min_val,
+                    })
+                    i_ep = j_ep
+                else:
+                    i_ep += 1
+
+            episodes_mix.sort(key=lambda x: x["드로우다운"])
+            top10_mix = episodes_mix[:10]
+            for idx, ep in enumerate(top10_mix):
+                ep["순위"] = idx + 1
+                ep["드로우다운"] = f"{ep['드로우다운']:.1f}%"
+            if top10_mix:
+                df_dd_top10_mix = pd.DataFrame(top10_mix)[["순위", "시작", "종료", "드로우다운"]]
+                st.dataframe(df_dd_top10_mix, use_container_width=True, hide_index=True)
+
+            st.markdown("##### 🔻 폭락 시장 포트폴리오 성과")
+            STRESS_PERIODS_MIX = [
+                ("코로나 팬데믹", "2020-01-01", "2020-03-31"),
+                ("2022 긴축 발작 (금리인상기)", "2022-01-01", "2022-10-31"),
+                ("2018년 4분기 조정", "2018-10-01", "2018-12-31"),
+            ]
+            stress_rows_mix = []
+            for label, s, e in STRESS_PERIODS_MIX:
+                s_ts, e_ts = pd.Timestamp(s), pd.Timestamp(e)
+                mask_mix = (bt_results_mix["date"] >= s_ts) & (bt_results_mix["date"] <= e_ts)
+                sub_mix = bt_results_mix[mask_mix]
+                if len(sub_mix) == 0:
+                    continue
+                port_cum_mix = (np.prod(1 + sub_mix["monthly_return"].values / 100.0) - 1) * 100
+                qqq_sub_ret_mix = monthly_px_mix["QQQ"].pct_change().reindex(sub_mix["date"]).fillna(0.0)
+                qqq_cum_mix = (np.prod(1 + qqq_sub_ret_mix.values) - 1) * 100
+                stress_rows_mix.append({
+                    "스트레스 기간": label,
+                    "시작": s_ts.strftime("%Y/%m"),
+                    "종료": e_ts.strftime("%Y/%m"),
+                    "포트폴리오 수익률": f"{port_cum_mix:+.1f}%",
+                    "QQQ 수익률": f"{qqq_cum_mix:+.1f}%",
+                })
+            if stress_rows_mix:
+                st.dataframe(pd.DataFrame(stress_rows_mix), use_container_width=True, hide_index=True)
+
+            st.markdown("##### 📊 주요 지표 비교 (vs QQQ)")
+            def _fmt_pct_mix(x):
+                return f"{x:.1f}%" if x is not None and not (isinstance(x, float) and np.isnan(x)) else "데이터 부족"
+
+            port_ret_arr_mix = bt_results_mix["monthly_return"].values
+            qqq_ret_arr_mix = qqq_monthly_ret_mix.values
+            dd_arr_mix = bt_results_mix["drawdown"].values
+            qqq_nav_arr_mix = chart_df_mix["qqq_nav"].values
+            qqq_running_max_mix = np.maximum.accumulate(qqq_nav_arr_mix)
+            qqq_dd_arr_mix = (qqq_nav_arr_mix / qqq_running_max_mix - 1) * 100
+
+            period_ret_mix = (final_nav_mix / 100.0 - 1) * 100
+            qqq_final_nav_mix = qqq_nav_arr_mix[-1]
+            qqq_period_ret_mix = (qqq_final_nav_mix / 100.0 - 1) * 100
+            qqq_cagr_mix = ((qqq_final_nav_mix / 100.0) ** (1 / total_years_mix) - 1) * 100
+
+            last_date_mix2 = bt_results_mix["date"].iloc[-1]
+            current_year_mix2 = last_date_mix2.year
+            ytd_mask_mix = bt_results_mix["date"].dt.year == current_year_mix2
+            port_ytd_mix = (np.prod(1 + bt_results_mix.loc[ytd_mask_mix, "monthly_return"].values / 100.0) - 1) * 100
+            qqq_ytd_mix = (np.prod(1 + (qqq_ret_arr_mix[ytd_mask_mix.values] / 100.0)) - 1) * 100
+
+            win_months_mix = int((port_ret_arr_mix > 0).sum())
+            qqq_win_months_mix = int((qqq_ret_arr_mix > 0).sum())
+            total_months_mix = len(port_ret_arr_mix)
+
+            mdd_idx_mix = int(np.argmin(dd_arr_mix))
+            mdd_date_mix = bt_results_mix["date"].iloc[mdd_idx_mix].strftime("%Y-%m")
+            qqq_mdd_idx_mix = int(np.argmin(qqq_dd_arr_mix))
+            qqq_mdd_date_mix = bt_results_mix["date"].iloc[qqq_mdd_idx_mix].strftime("%Y-%m")
+
+            def _trailing_mix(arr, months):
+                if len(arr) < months:
+                    return None, None
+                window = arr[-months:]
+                cum = (np.prod(1 + window / 100.0) - 1) * 100
+                ann_std = np.std(window, ddof=1) * np.sqrt(12) if len(window) > 1 else None
+                return cum, ann_std
+
+            ret_1y_mix, std_1y_mix = _trailing_mix(port_ret_arr_mix, 12)
+            ret_3y_mix, std_3y_mix = _trailing_mix(port_ret_arr_mix, 36)
+            ret_5y_mix, std_5y_mix = _trailing_mix(port_ret_arr_mix, 60)
+            qqq_ret_1y_mix, qqq_std_1y_mix = _trailing_mix(qqq_ret_arr_mix, 12)
+            qqq_ret_3y_mix, qqq_std_3y_mix = _trailing_mix(qqq_ret_arr_mix, 36)
+            qqq_ret_5y_mix, qqq_std_5y_mix = _trailing_mix(qqq_ret_arr_mix, 60)
+
+            mean_m_mix = np.mean(port_ret_arr_mix) / 100.0
+            std_m_mix = np.std(port_ret_arr_mix, ddof=1) / 100.0 if total_months_mix > 1 else np.nan
+            annual_vol_mix = std_m_mix * np.sqrt(12) * 100 if not np.isnan(std_m_mix) else np.nan
+            sharpe_mix = (mean_m_mix * 12) / (std_m_mix * np.sqrt(12)) if std_m_mix and std_m_mix > 0 else np.nan
+
+            downside_mix = port_ret_arr_mix[port_ret_arr_mix < 0] / 100.0
+            downside_std_mix = np.std(downside_mix, ddof=1) if len(downside_mix) > 1 else np.nan
+            sortino_mix = (mean_m_mix * 12) / (downside_std_mix * np.sqrt(12)) if downside_std_mix and downside_std_mix > 0 else np.nan
+
+            ulcer_mix = np.sqrt(np.mean(dd_arr_mix ** 2))
+            upi_mix = cagr_mix / ulcer_mix if ulcer_mix > 0 else np.nan
+
+            qqq_mean_m_mix = np.mean(qqq_ret_arr_mix) / 100.0
+            qqq_std_m_mix = np.std(qqq_ret_arr_mix, ddof=1) / 100.0 if total_months_mix > 1 else np.nan
+            qqq_annual_vol_mix = qqq_std_m_mix * np.sqrt(12) * 100 if not np.isnan(qqq_std_m_mix) else np.nan
+            qqq_sharpe_mix = (qqq_mean_m_mix * 12) / (qqq_std_m_mix * np.sqrt(12)) if qqq_std_m_mix and qqq_std_m_mix > 0 else np.nan
+
+            qqq_downside_mix = qqq_ret_arr_mix[qqq_ret_arr_mix < 0] / 100.0
+            qqq_downside_std_mix = np.std(qqq_downside_mix, ddof=1) if len(qqq_downside_mix) > 1 else np.nan
+            qqq_sortino_mix = (qqq_mean_m_mix * 12) / (qqq_downside_std_mix * np.sqrt(12)) if qqq_downside_std_mix and qqq_downside_std_mix > 0 else np.nan
+
+            qqq_ulcer_mix = np.sqrt(np.mean(qqq_dd_arr_mix ** 2))
+            qqq_upi_mix = qqq_cagr_mix / qqq_ulcer_mix if qqq_ulcer_mix > 0 else np.nan
+
+            alloc_list_mix = bt_results_mix["alloc"].tolist()
+            monthly_turnovers_mix = []
+            prev_alloc_mix = {}
+            for alloc_d in alloc_list_mix:
+                all_tk_mix = set(prev_alloc_mix.keys()) | set(alloc_d.keys())
+                diff_mix = sum(abs(alloc_d.get(t, 0.0) - prev_alloc_mix.get(t, 0.0)) for t in all_tk_mix)
+                monthly_turnovers_mix.append(diff_mix / 2.0)
+                prev_alloc_mix = alloc_d
+            avg_turnover_mix = np.mean(monthly_turnovers_mix) if monthly_turnovers_mix else 0.0
+            annual_turnover_mix = avg_turnover_mix * 12
+
+            metrics_rows_mix = [
+                ("기간 수익률", _fmt_pct_mix(period_ret_mix), _fmt_pct_mix(qqq_period_ret_mix)),
+                ("연환산 수익률 (CAGR)", _fmt_pct_mix(cagr_mix), _fmt_pct_mix(qqq_cagr_mix)),
+                ("이번 달 수익률", _fmt_pct_mix(port_ret_arr_mix[-1]), _fmt_pct_mix(qqq_ret_arr_mix[-1])),
+                ("올해 수익률 (YTD)", _fmt_pct_mix(port_ytd_mix), _fmt_pct_mix(qqq_ytd_mix)),
+                ("월 최고 수익률", _fmt_pct_mix(port_ret_arr_mix.max()), _fmt_pct_mix(qqq_ret_arr_mix.max())),
+                ("월 최저 수익률", _fmt_pct_mix(port_ret_arr_mix.min()), _fmt_pct_mix(qqq_ret_arr_mix.min())),
+                ("수익 월 비중", f"{win_months_mix} / {total_months_mix}", f"{qqq_win_months_mix} / {total_months_mix}"),
+                ("연 변동성", _fmt_pct_mix(annual_vol_mix), _fmt_pct_mix(qqq_annual_vol_mix)),
+                ("최대 낙폭 (MDD)", _fmt_pct_mix(mdd_mix), _fmt_pct_mix(qqq_dd_arr_mix.min())),
+                ("MDD 시점", mdd_date_mix, qqq_mdd_date_mix),
+                ("1년 수익률", _fmt_pct_mix(ret_1y_mix), _fmt_pct_mix(qqq_ret_1y_mix)),
+                ("3년 수익률", _fmt_pct_mix(ret_3y_mix), _fmt_pct_mix(qqq_ret_3y_mix)),
+                ("5년 수익률", _fmt_pct_mix(ret_5y_mix), _fmt_pct_mix(qqq_ret_5y_mix)),
+                ("1년 표준편차", _fmt_pct_mix(std_1y_mix), _fmt_pct_mix(qqq_std_1y_mix)),
+                ("3년 표준편차", _fmt_pct_mix(std_3y_mix), _fmt_pct_mix(qqq_std_3y_mix)),
+                ("5년 표준편차", _fmt_pct_mix(std_5y_mix), _fmt_pct_mix(qqq_std_5y_mix)),
+                ("샤프 지수", f"{sharpe_mix:.2f}" if not np.isnan(sharpe_mix) else "데이터 부족", f"{qqq_sharpe_mix:.2f}" if not np.isnan(qqq_sharpe_mix) else "데이터 부족"),
+                ("소티노 지수", f"{sortino_mix:.2f}" if not np.isnan(sortino_mix) else "데이터 부족", f"{qqq_sortino_mix:.2f}" if not np.isnan(qqq_sortino_mix) else "데이터 부족"),
+                ("UPI 지수", f"{upi_mix:.2f}" if not np.isnan(upi_mix) else "데이터 부족", f"{qqq_upi_mix:.2f}" if not np.isnan(qqq_upi_mix) else "데이터 부족"),
+                ("연간 턴오버", f"{annual_turnover_mix:.1f}%", "0.0%"),
+            ]
+            df_metrics_mix = pd.DataFrame(metrics_rows_mix, columns=["지표", "2026 혼합전략", "QQQ"])
+            st.dataframe(df_metrics_mix, use_container_width=True, hide_index=True)
+
+            st.markdown("##### 🗓️ 월별 세부 리밸런싱 기록")
             display_bt_mix = bt_results_mix.copy()
             display_bt_mix["연월"] = display_bt_mix["date"].dt.strftime("%Y-%m")
             display_bt_mix["월 수익률"] = display_bt_mix["monthly_return"].apply(lambda x: f"{x:+.2f}%")
@@ -1485,6 +1726,23 @@ else:
 
     with c_a:
         st.header("🛡️ 전략 A (안정형)")
+
+        with st.expander("📖 전략 A 실행 명세서 (작동원칙)", expanded=False):
+            st.markdown("""
+            ### 🛡️ 전략 A 핵심 구조 (2단계 카나리아 로테이션 시스템)
+            시장의 핵심 선행지표인 물가연동채(TIP)를 통해 거시경제 국면을 판독하고, 국면에 맞춰 공격/방어 자산군 내에서
+            모멘텀 상위 종목으로 매월 자동 리밸런싱하는 규칙 기반 시스템입니다.
+
+            #### 1단계 — 카나리아 국면 판독 (신호)
+            * 매월 말 기준 TIP의 **현재가**와 **최근 11개월 이동평균선(11MA)**을 비교합니다.
+            * **공격 국면**: `TIP 현재가 > TIP 11MA` (신호 비율 > 1.0)
+            * **방어 국면**: `TIP 현재가 ≤ TIP 11MA` (신호 비율 ≤ 1.0)
+
+            #### 2단계 — 공격/방어 자산 매수 규칙
+            * **공격 국면**: 대상 자산 12개 중 스코어 상위 4종목에 각각 25%씩 균등 배분.
+            * **방어 국면**: 대상 자산 5개 중 스코어 1위 자산에 100% 투자 (스코어마저 음수면 현금 100%).
+            """)
+
         st.markdown("**1단계: 카나리아 신호 판단** \n"
                     "신호 비율($TIP 현재가 / TIP_{11MA}$)이 $1.0$을 초과하면 공격 모드, 이하이면 방어 모드로 진입합니다.")
         col1, col2, col3 = st.columns(3)
@@ -1497,8 +1755,7 @@ else:
             df_off_a = df_all[df_all["Ticker"].isin(OFFENSIVE_A)].copy().sort_values(by="A_공격스코어", ascending=False)
             st.write("**공격 자산 순위 (1-3-6-12M 단순 평균 모멘텀):**")
             st.dataframe(
-                df_off_a[["Ticker", "현재가", "1M", "3M", "6M", "12M", "A_공격스코어"]]
-                .rename(columns={"A_공격스코어": "모멘텀 스코어"}),
+                df_off_a[["Ticker", "현재가", "1M", "3M", "6M", "12M", "A_공격스코어"]].rename(columns={"A_공격스코어": "모멘텀 스코어"}),
                 use_container_width=True, hide_index=True
             )
             st.subheader("🎯 최종 포트폴리오 가이드 (각 25% 균등 분배)")
@@ -1511,8 +1768,7 @@ else:
             df_def_a = df_all[df_all["Ticker"].isin(DEFENSIVE_A)].copy().sort_values(by="A_방어스코어", ascending=False)
             st.write("**방어 자산 순위 (1-3-6-9-12M 단순 평균 모멘텀):**")
             st.dataframe(
-                df_def_a[["Ticker", "현재가", "1M", "3M", "6M", "9M", "12M", "A_방어스코어"]]
-                .rename(columns={"A_방어스코어": "모멘텀 스코어"}),
+                df_def_a[["Ticker", "현재가", "1M", "3M", "6M", "9M", "12M", "A_방어스코어"]].rename(columns={"A_방어스코어": "모멘텀 스코어"}),
                 use_container_width=True, hide_index=True
             )
             st.subheader("🎯 최종 포트폴리오 가이드")
@@ -1524,10 +1780,140 @@ else:
                     s = data_dict.get(t, {}).get("A_방어스코어", 0.0)
                     st.info(f"**{t}** : 비중 **100%** (현재가: ${p:.2f}, 모멘텀: {s:.2f}%)")
 
+        st.markdown("---")
+        st.markdown("### 🛑 전략 A 백테스트 성과 분석")
+        with st.container():
+            st.markdown('<div class="control-panel">', unsafe_allow_html=True)
+            st.markdown('<div class="control-header">⚙️ 데이터 범위 및 리스크 관리 설정</div>', unsafe_allow_html=True)
+            bt_start_label_a = st.selectbox(
+                "분석 및 백테스트 시작일",
+                ["2018-01-01 (코로나 및 금리인상기 포함)", "2015-01-01 (장기 검증)", "2020-01-01 (최근 트렌드)"],
+                index=0,
+                key="bt_start_select_a"
+            )
+            bt_start_a = bt_start_label_a.split(" ")[0]
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with st.spinner("전략 A 실시간 백테스트 엔진 구동 중..."):
+            try:
+                bt_tickers_a = sorted(set(OFFENSIVE_A + DEFENSIVE_A + ["TIP", "QQQ"]))
+                daily_px_a = get_daily_price_history_a(bt_tickers_a, start=bt_start_a)
+                monthly_px_a = to_monthly_last_a(daily_px_a)
+                bt_results_a = run_backtest_strategy_a_full(monthly_px_a)
+                bt_ok_a = len(bt_results_a) > 0
+            except Exception as e:
+                st.error(f"전략 A 백테스트 데이터 로딩 오류: {e}")
+                bt_ok_a = False
+
+        if bt_ok_a:
+            total_days_a = (bt_results_a["date"].iloc[-1] - bt_results_a["date"].iloc[0]).days
+            total_years_a = total_days_a / 365.25 if total_days_a > 0 else 1.0
+            final_nav_a = bt_results_a["nav"].iloc[-1]
+            cagr_a = ((final_nav_a / 100.0) ** (1 / total_years_a) - 1) * 100
+            mdd_a = bt_results_a["drawdown"].min()
+
+            bc1, bc2, bc3 = st.columns(3)
+            bc1.metric("연환산 복리 수익률 (CAGR)", f"{cagr_a:.2f}%")
+            bc2.metric("최대 낙폭 (MDD)", f"{mdd_a:.2f}%", delta_color="inverse")
+            bc3.metric("최종 자산 가치 (NAV)", f"{final_nav_a:.1f}", "초기금 100 기준")
+
+            chart_df_a = bt_results_a.copy()
+            chart_df_a["date_str"] = chart_df_a["date"].dt.strftime("%Y-%m")
+            qqq_ret_series_a = monthly_px_a["QQQ"].pct_change().reindex(bt_results_a["date"])
+            chart_df_a["qqq_nav"] = (100 * (1 + qqq_ret_series_a.fillna(0)).cumprod()).values
+
+            nav_color_scale_a = alt.Scale(domain=["전략A", "QQQ"], range=["#50ad6a", "#808080"])
+            nav_long_a = chart_df_a.melt(id_vars="date_str", value_vars=["nav", "qqq_nav"], var_name="series", value_name="value")
+            nav_long_a["series"] = nav_long_a["series"].map({"nav": "전략A", "qqq_nav": "QQQ"})
+
+            nav_chart_a = alt.Chart(nav_long_a).mark_line(size=2.5).encode(
+                x=alt.X("date_str:N", sort=None, title="년-월"),
+                y=alt.Y("value:Q", title="NAV (기준 100)"),
+                color=alt.Color("series:N", scale=nav_color_scale_a, legend=alt.Legend(title=None, orient="bottom")),
+                tooltip=[alt.Tooltip("date_str:N", title="년-월"), alt.Tooltip("series:N", title="구분"), alt.Tooltip("value:Q", title="NAV", format=".1f")],
+            ).properties(height=350)
+            st.altair_chart(nav_chart_a, use_container_width=True)
+
+            st.markdown("##### 📊 연도별 수익률 (%)")
+            yearly_df_a = bt_results_a.copy()
+            yearly_df_a["year"] = yearly_df_a["date"].dt.year
+            yearly_returns_a = yearly_df_a.groupby("year")["monthly_return"].apply(lambda x: (np.prod(1 + x / 100.0) - 1) * 100).reset_index(name="annual_return")
+            yearly_returns_a["year_str"] = yearly_returns_a["year"].astype(str)
+            yearly_returns_a["series"] = "전략A"
+            year_sort_order_a = yearly_returns_a["year_str"].tolist()
+
+            qqq_monthly_ret_a = monthly_px_a["QQQ"].pct_change().reindex(bt_results_a["date"]) * 100
+            qqq_ret_df_a = pd.DataFrame({"date": bt_results_a["date"].values, "qqq_return": qqq_monthly_ret_a.values})
+            qqq_ret_df_a["year"] = pd.to_datetime(qqq_ret_df_a["date"]).dt.year
+            qqq_yearly_a = qqq_ret_df_a.groupby("year")["qqq_return"].apply(lambda x: (np.prod(1 + x / 100.0) - 1) * 100).reset_index(name="annual_return")
+            qqq_yearly_a["year_str"] = qqq_yearly_a["year"].astype(str)
+            qqq_yearly_a["series"] = "QQQ"
+
+            color_scale_a = alt.Scale(domain=["전략A", "QQQ"], range=["#50ad6a", "#808080"])
+            annual_bar_a = alt.Chart(yearly_returns_a).mark_bar(size=28).encode(
+                x=alt.X("year_str:N", title="연도", sort=year_sort_order_a),
+                y=alt.Y("annual_return:Q", title="수익률 (%)"),
+                color=alt.Color("series:N", scale=color_scale_a, legend=alt.Legend(title=None, orient="bottom")),
+                tooltip=[alt.Tooltip("year_str:N", title="연도"), alt.Tooltip("annual_return:Q", title="수익률", format="+.2f")],
+            )
+            annual_labels_a = alt.Chart(yearly_returns_a).mark_text(dy=alt.expr("datum.annual_return >= 0 ? -8 : 14"), fontWeight="bold", fontSize=11, color="#0f172a").encode(
+                x=alt.X("year_str:N", sort=year_sort_order_a), y=alt.Y("annual_return:Q"), text=alt.Text("annual_return:Q", format="+.1f")
+            )
+            qqq_points_a = alt.Chart(qqq_yearly_a).mark_point(filled=True, size=110, stroke="white", strokeWidth=1.2).encode(
+                x=alt.X("year_str:N", sort=year_sort_order_a), y=alt.Y("annual_return:Q"),
+                color=alt.Color("series:N", scale=color_scale_a, legend=alt.Legend(title=None, orient="bottom")),
+                tooltip=[alt.Tooltip("year_str:N", title="연도"), alt.Tooltip("annual_return:Q", title="QQQ 수익률", format="+.2f")],
+            )
+            st.altair_chart((annual_bar_a + annual_labels_a + qqq_points_a).properties(height=320), use_container_width=True)
+
+            st.markdown("##### 🗓️ 월별 수익률 (%)")
+            monthly_df_a = bt_results_a.copy()
+            monthly_df_a["year"] = monthly_df_a["date"].dt.year
+            monthly_df_a["month"] = monthly_df_a["date"].dt.month
+            month_labels_a = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun", 7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"}
+            monthly_df_a["month_label"] = monthly_df_a["month"].map(month_labels_a)
+            monthly_df_a["year_label"] = monthly_df_a["year"].astype(str)
+
+            avg_by_month_a = monthly_df_a.groupby(["month", "month_label"])["monthly_return"].mean().reset_index()
+            avg_by_month_a["year_label"] = "평균"
+            heat_df_a = pd.concat([monthly_df_a[["year_label", "month", "month_label", "monthly_return"]], avg_by_month_a[["year_label", "month", "month_label", "monthly_return"]]], ignore_index=True)
+            year_sort_order_full_a = [str(y) for y in sorted(monthly_df_a["year"].unique())] + ["평균"]
+            month_sort_order_a = [month_labels_a[m] for m in range(1, 13)]
+
+            heat_rect_a = alt.Chart(heat_df_a).mark_rect(stroke="white", strokeWidth=1.5).encode(
+                x=alt.X("month_label:N", title=None, sort=month_sort_order_a),
+                y=alt.Y("year_label:N", title=None, sort=year_sort_order_full_a),
+                color=alt.Color("monthly_return:Q", scale=alt.Scale(type="threshold", domain=[-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5], range=["#cf6265", "#e67f82", "#ecaaab", "#f6d4d5", "#fafbff", "#d7e4da", "#accab2", "#82ae8b", "#599265"]), legend=alt.Legend(title="수익률 (%)", orient="bottom", gradientLength=220)),
+                tooltip=[alt.Tooltip("year_label:N", title="연도"), alt.Tooltip("month_label:N", title="월"), alt.Tooltip("monthly_return:Q", title="수익률", format="+.2f")],
+            )
+            heat_text_a = alt.Chart(heat_df_a).mark_text(fontSize=10, fontWeight="bold").encode(
+                x=alt.X("month_label:N", sort=month_sort_order_a), y=alt.Y("year_label:N", sort=year_sort_order_full_a), text=alt.Text("monthly_return:Q", format="+.1f"), color=alt.value("#334155")
+            )
+            st.altair_chart((heat_rect_a + heat_text_a).properties(height=32 * len(year_sort_order_full_a) + 80), use_container_width=True)
+
+            st.markdown("##### 📉 낙폭 (Drawdown) 히스토리")
+            dd_chart_a = alt.Chart(chart_df_a).mark_area(color="#fecaca", opacity=0.8).encode(
+                x=alt.X("date_str:N", sort=None, title="년-월"), y=alt.Y("drawdown:Q", title="MDD (%)"), tooltip=["date_str", "drawdown"]
+            ).properties(height=200)
+            st.altair_chart(dd_chart_a, use_container_width=True)
+
+            display_bt_a = bt_results_a.copy()
+            display_bt_a["연월"] = display_bt_a["date"].dt.strftime("%Y-%m")
+            display_bt_a["월 수익률"] = display_bt_a["monthly_return"].apply(lambda x: f"{x:+.2f}%")
+            display_bt_a["낙폭"] = display_bt_a["drawdown"].apply(lambda x: f"{x:.2f}%")
+            display_bt_a["NAV"] = display_bt_a["nav"].apply(lambda x: f"{x:.1f}")
+            st.dataframe(display_bt_a[["연월", "mode", "월 수익률", "weights_str", "NAV", "낙폭"]].iloc[::-1], use_container_width=True, hide_index=True)
+
     with c_b:
         st.header("⚡ 전략 B (공격형)")
-        st.markdown("**1단계: 카나리아 신호 판단** \n"
-                    "TIP의 단순 모멘텀 스코어가 양수($> 0$)이면 공격, 음수($\\le 0$)이면 방어 모드로 진입합니다.")
+        with st.expander("📖 전략 B 실행 명세서 (작동원칙)", expanded=False):
+            st.markdown("""
+            ### ⚡ 전략 B 핵심 구조 (레버리지 집중 투자형 카나리아 로테이션)
+            채권 실질금리 모멘텀(TIP)의 방향 전환을 신호로 삼아, 3배 레버리지·인버스 자산군 중 단 1개 종목에 100% 집중 투자합니다.
+            * **공격 신호**: TIP 1-3-6-9-12M 모멘텀 > 0 -> 가중평균 모멘텀 1위 자산 100% 몰빵.
+            * **방어 신호**: TIP 모멘텀 <= 0 -> 5개월 수익률 1위 인버스 자산 100% (모멘텀 음수면 현금 100%).
+            """)
+
         col1_b, col2_b = st.columns(2)
         col1_b.metric("TIP 현재가", f"${tip_current:.2f}")
         col2_b.metric("TIP 단순 모멘텀", f"{tip_score_b:.2f}%")
@@ -1537,8 +1923,7 @@ else:
             df_off_b = df_all[df_all["Ticker"].isin(OFFENSIVE_B)].copy().sort_values(by="B_공격스코어", ascending=False)
             st.write("**공격 자산 순위 (1-3-6-12M 가중 평균 모멘텀):**")
             st.dataframe(
-                df_off_b[["Ticker", "현재가", "1M", "3M", "6M", "12M", "B_공격스코어"]]
-                .rename(columns={"B_공격스코어": "가중 모멘텀 스코어"}),
+                df_off_b[["Ticker", "현재가", "1M", "3M", "6M", "12M", "B_공격스코어"]].rename(columns={"B_공격스코어": "가중 모멘텀 스코어"}),
                 use_container_width=True, hide_index=True
             )
             st.subheader("🎯 최종 포트폴리오 가이드 (100% 집중 투자)")
@@ -1551,8 +1936,7 @@ else:
             df_def_b = df_all[df_all["Ticker"].isin(DEFENSIVE_B)].copy().sort_values(by="5M", ascending=False)
             st.write("**방어 자산 순위 (5개월 단순 수익률 기준):**")
             st.dataframe(
-                df_def_b[["Ticker", "현재가", "5M", "B_단순모멘텀"]]
-                .rename(columns={"5M": "5개월 수익률", "B_단순모멘텀": "자체 단순모멘텀"}),
+                df_def_b[["Ticker", "현재가", "5M", "B_단순모멘텀"]].rename(columns={"5M": "5개월 수익률", "B_단순모멘텀": "자체 단순모멘텀"}),
                 use_container_width=True, hide_index=True
             )
             st.subheader("🎯 최종 포트폴리오 가이드")
@@ -1564,30 +1948,147 @@ else:
                     s = data_dict.get(t, {}).get("B_단순모멘텀", 0.0)
                     st.info(f"🏆 **{t}** : 비중 **100%** (현재가: ${p:.2f}, 자체 모멘텀: {s:.2f}%)")
 
-    # ============================================================
-    # 탭 C: 전략 C (섹터로테이션) - 동적 Z-Score 고도화 화면
-    # ============================================================
+        st.markdown("---")
+        st.markdown("### 🛑 전략 B 백테스트 성과 분석")
+        with st.container():
+            st.markdown('<div class="control-panel">', unsafe_allow_html=True)
+            st.markdown('<div class="control-header">⚙️️ 데이터 범위 및 리스크 관리 설정</div>', unsafe_allow_html=True)
+            bt_start_label_b = st.selectbox(
+                "분석 및 백테스트 시작일",
+                ["2018-01-01 (코로나 및 금리인상기 포함)", "2015-01-01 (장기 검증)", "2020-01-01 (최근 트렌드)"],
+                index=0,
+                key="bt_start_select_b"
+            )
+            bt_start_b = bt_start_label_b.split(" ")[0]
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with st.spinner("전략 B 실시간 백테스트 엔진 구동 중..."):
+            try:
+                bt_tickers_b = sorted(set(OFFENSIVE_B + DEFENSIVE_B + ["TIP", "QQQ"]))
+                daily_px_b = get_daily_price_history_a(bt_tickers_b, start=bt_start_b)
+                monthly_px_b = to_monthly_last_a(daily_px_b)
+                bt_results_b = run_backtest_strategy_b_full(monthly_px_b)
+                bt_ok_b = len(bt_results_b) > 0
+            except Exception as e:
+                st.error(f"전략 B 백테스트 데이터 로딩 오류: {e}")
+                bt_ok_b = False
+
+        if bt_ok_b:
+            total_days_b = (bt_results_b["date"].iloc[-1] - bt_results_b["date"].iloc[0]).days
+            total_years_b = total_days_b / 365.25 if total_days_b > 0 else 1.0
+            final_nav_b = bt_results_b["nav"].iloc[-1]
+            cagr_b = ((final_nav_b / 100.0) ** (1 / total_years_b) - 1) * 100
+            mdd_b = bt_results_b["drawdown"].min()
+
+            bbc1, bbc2, bbc3 = st.columns(3)
+            bbc1.metric("연환산 복리 수익률 (CAGR)", f"{cagr_b:.2f}%")
+            bbc2.metric("최대 낙폭 (MDD)", f"{mdd_b:.2f}%", delta_color="inverse")
+            bbc3.metric("최종 자산 가치 (NAV)", f"{final_nav_b:.1f}", "초기금 100 기준")
+
+            chart_df_b = bt_results_b.copy()
+            chart_df_b["date_str"] = chart_df_b["date"].dt.strftime("%Y-%m")
+            qqq_ret_series_b = monthly_px_b["QQQ"].pct_change().reindex(bt_results_b["date"])
+            chart_df_b["qqq_nav"] = (100 * (1 + qqq_ret_series_b.fillna(0)).cumprod()).values
+
+            nav_color_scale_b = alt.Scale(domain=["전략B", "QQQ"], range=["#f97316", "#808080"])
+            nav_long_b = chart_df_b.melt(id_vars="date_str", value_vars=["nav", "qqq_nav"], var_name="series", value_name="value")
+            nav_long_b["series"] = nav_long_b["series"].map({"nav": "전략B", "qqq_nav": "QQQ"})
+
+            nav_chart_b = alt.Chart(nav_long_b).mark_line(size=2.5).encode(
+                x=alt.X("date_str:N", sort=None, title="년-월"),
+                y=alt.Y("value:Q", title="NAV (기준 100)"),
+                color=alt.Color("series:N", scale=nav_color_scale_b, legend=alt.Legend(title=None, orient="bottom")),
+                tooltip=[alt.Tooltip("date_str:N", title="년-월"), alt.Tooltip("series:N", title="구분"), alt.Tooltip("value:Q", title="NAV", format=".1f")],
+            ).properties(height=350)
+            st.altair_chart(nav_chart_b, use_container_width=True)
+
+            st.markdown("##### 📊 연도별 수익률 (%)")
+            yearly_df_b = bt_results_b.copy()
+            yearly_df_b["year"] = yearly_df_b["date"].dt.year
+            yearly_returns_b = yearly_df_b.groupby("year")["monthly_return"].apply(lambda x: (np.prod(1 + x / 100.0) - 1) * 100).reset_index(name="annual_return")
+            yearly_returns_b["year_str"] = yearly_returns_b["year"].astype(str)
+            yearly_returns_b["series"] = "전략B"
+            year_sort_order_b = yearly_returns_b["year_str"].tolist()
+
+            qqq_monthly_ret_b = monthly_px_b["QQQ"].pct_change().reindex(bt_results_b["date"]) * 100
+            qqq_ret_df_b = pd.DataFrame({"date": bt_results_b["date"].values, "qqq_return": qqq_monthly_ret_b.values})
+            qqq_ret_df_b["year"] = pd.to_datetime(qqq_ret_df_b["date"]).dt.year
+            qqq_yearly_b = qqq_ret_df_b.groupby("year")["qqq_return"].apply(lambda x: (np.prod(1 + x / 100.0) - 1) * 100).reset_index(name="annual_return")
+            qqq_yearly_b["year_str"] = qqq_yearly_b["year"].astype(str)
+            qqq_yearly_b["series"] = "QQQ"
+
+            color_scale_b = alt.Scale(domain=["전략B", "QQQ"], range=["#f97316", "#808080"])
+            annual_bar_b = alt.Chart(yearly_returns_b).mark_bar(size=28).encode(
+                x=alt.X("year_str:N", title="연도", sort=year_sort_order_b),
+                y=alt.Y("annual_return:Q", title="수익률 (%)"),
+                color=alt.Color("series:N", scale=color_scale_b, legend=alt.Legend(title=None, orient="bottom")),
+                tooltip=[alt.Tooltip("year_str:N", title="연도"), alt.Tooltip("annual_return:Q", title="수익률", format="+.2f")],
+            )
+            annual_labels_b = alt.Chart(yearly_returns_b).mark_text(dy=alt.expr("datum.annual_return >= 0 ? -8 : 14"), fontWeight="bold", fontSize=11, color="#0f172a").encode(
+                x=alt.X("year_str:N", sort=year_sort_order_b), y=alt.Y("annual_return:Q"), text=alt.Text("annual_return:Q", format="+.1f")
+            )
+            qqq_points_b = alt.Chart(qqq_yearly_b).mark_point(filled=True, size=110, stroke="white", strokeWidth=1.2).encode(
+                x=alt.X("year_str:N", sort=year_sort_order_b), y=alt.Y("annual_return:Q"),
+                color=alt.Color("series:N", scale=color_scale_b, legend=alt.Legend(title=None, orient="bottom")),
+                tooltip=[alt.Tooltip("year_str:N", title="연도"), alt.Tooltip("annual_return:Q", title="QQQ 수익률", format="+.2f")],
+            )
+            st.altair_chart((annual_bar_b + annual_labels_b + qqq_points_b).properties(height=320), use_container_width=True)
+
+            st.markdown("##### 🗓️ 월별 수익률 (%)")
+            monthly_df_b = bt_results_b.copy()
+            monthly_df_b["year"] = monthly_df_b["date"].dt.year
+            monthly_df_b["month"] = monthly_df_b["date"].dt.month
+            month_labels_b = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun", 7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"}
+            monthly_df_b["month_label"] = monthly_df_b["month"].map(month_labels_b)
+            monthly_df_b["year_label"] = monthly_df_b["year"].astype(str)
+
+            avg_by_month_b = monthly_df_b.groupby(["month", "month_label"])["monthly_return"].mean().reset_index()
+            avg_by_month_b["year_label"] = "평균"
+            heat_df_b = pd.concat([monthly_df_b[["year_label", "month", "month_label", "monthly_return"]], avg_by_month_b[["year_label", "month", "month_label", "monthly_return"]]], ignore_index=True)
+            year_sort_order_full_b = [str(y) for y in sorted(monthly_df_b["year"].unique())] + ["평균"]
+            month_sort_order_b = [month_labels_b[m] for m in range(1, 13)]
+
+            heat_rect_b = alt.Chart(heat_df_b).mark_rect(stroke="white", strokeWidth=1.5).encode(
+                x=alt.X("month_label:N", title=None, sort=month_sort_order_b),
+                y=alt.Y("year_label:N", title=None, sort=year_sort_order_full_b),
+                color=alt.Color("monthly_return:Q", scale=alt.Scale(type="threshold", domain=[-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5], range=["#cf6265", "#e67f82", "#ecaaab", "#f6d4d5", "#fafbff", "#d7e4da", "#accab2", "#82ae8b", "#599265"]), legend=alt.Legend(title="수익률 (%)", orient="bottom", gradientLength=220)),
+                tooltip=[alt.Tooltip("year_label:N", title="연도"), alt.Tooltip("month_label:N", title="월"), alt.Tooltip("monthly_return:Q", title="수익률", format="+.2f")],
+            )
+            heat_text_b = alt.Chart(heat_df_b).mark_text(fontSize=10, fontWeight="bold").encode(
+                x=alt.X("month_label:N", sort=month_sort_order_b), y=alt.Y("year_label:N", sort=year_sort_order_full_b), text=alt.Text("monthly_return:Q", format="+.1f"), color=alt.value("#334155")
+            )
+            st.altair_chart((heat_rect_b + heat_text_b).properties(height=32 * len(year_sort_order_full_b) + 80), use_container_width=True)
+
+            st.markdown("##### 📉 낙폭 (Drawdown) 히스토리")
+            dd_chart_b = alt.Chart(chart_df_b).mark_area(color="#fecaca", opacity=0.8).encode(
+                x=alt.X("date_str:N", sort=None, title="년-월"), y=alt.Y("drawdown:Q", title="MDD (%)"), tooltip=["date_str", "drawdown"]
+            ).properties(height=200)
+            st.altair_chart(dd_chart_b, use_container_width=True)
+
+            display_bt_b = bt_results_b.copy()
+            display_bt_b["연월"] = display_bt_b["date"].dt.strftime("%Y-%m")
+            display_bt_b["월 수익률"] = display_bt_b["monthly_return"].apply(lambda x: f"{x:+.2f}%")
+            display_bt_b["낙폭"] = display_bt_b["drawdown"].apply(lambda x: f"{x:.2f}%")
+            display_bt_b["NAV"] = display_bt_b["nav"].apply(lambda x: f"{x:.1f}")
+            st.dataframe(display_bt_b[["연월", "mode", "월 수익률", "weights_str", "NAV", "낙폭"]].iloc[::-1], use_container_width=True, hide_index=True)
+
     with c_c:
         st.header("🔄 전략 C (동적 배당 Z-Score 섹터 로테이션)")
         
-        with st.expander("📖 전략 C 고도화 실행 명세서 (작동원칙)", expanded=False):
+        with st.expander("📖 전략 C 1단계 고도화 실행 명세서 (작동원칙)", expanded=False):
             st.markdown("""
-            ### 🔄 전략 C 핵심 구조 (S&P 500 동적 배당수익률 Z-Score 시스템)
-            빅테크 중심의 지수 개편과 자사주 매입 증가로 배당수익률의 절대 레벨이 구조적으로 낮아진 문제를 해결하기 위해,
-            **과거 고정 기준선(1.33%)을 폐기하고 최근 36개월 롤링 Z-Score($Z_{\\text{DY}}$)**를 카나리아 지표로 도입했습니다.
+            ### 🔄 전략 C 핵심 구조 (S&P 500 배당 36개월 롤링 Z-Score)
+            빅테크 자사주 매입 증가로 배당수익률의 절대 레벨이 구조적으로 낮아진 문제를 해결하기 위해,
+            **과거 고정 상수(1.33%)를 폐기하고 최근 36개월 롤링 Z-Score($Z_{\\text{DY}}$)**를 카나리아 지표로 도입했습니다.
 
             #### 1단계 — 동적 롤링 Z-Score 카나리아 판독 (신호)
-            * S&P 500(SPY)의 최근 12개월 누적 배당수익률 시계열을 기준으로 최근 36개월 평균과 표준편차를 실시간 계산합니다.
             $$Z_{\\text{DY}} = \\frac{\\text{DY}_t - \\mu_{36}(\\text{DY})}{\\sigma_{36}(\\text{DY})}$$
             * **공격 신호**: $Z_{\\text{DY}} > -0.5$ (역사적 추세 대비 정상 및 저평가 국면)
             * **방어 신호**: $Z_{\\text{DY}} \\le -0.5$ (역사적 추세 대비 극단적 과열 국면)
 
             #### 2단계 — 공격/방어 자산 매수 규칙
-            * **공격 신호 (주도 섹터 자산 7개)**: `FDN, LIT, SMH, XLE, IGV, QQQM, XLU`
-              * $1\\cdot 3\\cdot 6\\cdot 12\\text{M}$ 단순평균 모멘텀 1위 섹터에 **100% 집중 투자**
-            * **방어 신호 (원자재·방어 자산 5개)**: `GLD, PDBC, OILK, SHY, TLT`
-              * $1\\cdot 3\\cdot 6\\cdot 9\\cdot 12\\text{M}$ 단순평균 모멘텀 1위 자산에 **100% 투자**
-              * (단, 1위 자산의 모멘텀 스코어가 $\\le 0$인 경우 **현금 100% 대피**)
+            * **공격 신호**: 주도 섹터 7종 중 $1\\cdot 3\\cdot 6\\cdot 12\\text{M}$ 단순평균 모멘텀 1위에 **100% 집중 투자**
+            * **방어 신호**: 원자재/방어 5종 중 $1\\cdot 3\\cdot 6\\cdot 9\\cdot 12\\text{M}$ 단순평균 모멘텀 1위에 **100% 투자** (음수면 현금 100%)
             """)
 
         st.markdown(
@@ -1615,14 +2116,11 @@ else:
         if is_attack_c:
             st.success(f"🔥 **현재 모드: 주도 섹터 공격 모드** ($Z={realtime_z:+.2f} > -0.5$) - 거시 밸류에이션이 정상 범위에 있어 주도 섹터를 적극 매수합니다.")
             df_off_c = df_all[df_all["Ticker"].isin(OFFENSIVE_C)].copy().sort_values(by="A_공격스코어", ascending=False)
-            
             st.write("**주도 섹터 후보 순위 (1-3-6-12M 단순 평균 모멘텀):**")
             st.dataframe(
-                df_off_c[["Ticker", "현재가", "1M", "3M", "6M", "12M", "A_공격스코어"]]
-                .rename(columns={"A_공격스코어": "모멘텀 스코어"}),
+                df_off_c[["Ticker", "현재가", "1M", "3M", "6M", "12M", "A_공격스코어"]].rename(columns={"A_공격스코어": "모멘텀 스코어"}),
                 use_container_width=True, hide_index=True
             )
-            
             st.subheader("🎯 최종 포트폴리오 가이드 (100% 단일 섹터 투자)")
             for t, _ in alloc_c.items():
                 p = data_dict.get(t, {}).get("현재가", 0.0)
@@ -1631,14 +2129,11 @@ else:
         else:
             st.warning(f"🛡️ **현재 모드: 원자재 방어 자산 모드** ($Z={realtime_z:+.2f} \\le -0.5$) - 시장 밸류에이션 과열로 원자재/채권 자산으로 대피합니다.")
             df_def_c = df_all[df_all["Ticker"].isin(DEFENSIVE_C)].copy().sort_values(by="A_방어스코어", ascending=False)
-            
             st.write("**원자재 방어 자산 순위 (1-3-6-9-12M 단순 평균 모멘텀):**")
             st.dataframe(
-                df_def_c[["Ticker", "현재가", "1M", "3M", "6M", "9M", "12M", "A_방어스코어"]]
-                .rename(columns={"A_방어스코어": "모멘텀 스코어"}),
+                df_def_c[["Ticker", "현재가", "1M", "3M", "6M", "9M", "12M", "A_방어스코어"]].rename(columns={"A_방어스코어": "모멘텀 스코어"}),
                 use_container_width=True, hide_index=True
             )
-            
             st.subheader("🎯 최종 포트폴리오 가이드")
             for t, _ in alloc_c.items():
                 if t == "CASH (현금)":
@@ -1683,18 +2178,13 @@ else:
                 bt_results_c = run_backtest_strategy_c_full(monthly_px_c, spy_divs_c, z_threshold=z_thresh_input)
                 bt_ok_c = len(bt_results_c) > 0
             except Exception as e:
-                st.error(f"전략 C 백테스트 데이터 로딩 중 오류가 발생했습니다: {e}")
+                st.error(f"전략 C 백테스트 데이터 로딩 오류: {e}")
                 bt_ok_c = False
 
-        if not bt_ok_c:
-            st.warning("백테스트 데이터가 부족하거나 오류가 있습니다. 잠시 후 다시 시도해 주세요.")
-        else:
-            st.caption(f"시뮬레이션 기간: {bt_results_c['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_c['date'].iloc[-1].strftime('%Y-%m')}")
-
+        if bt_ok_c:
             total_days_c = (bt_results_c["date"].iloc[-1] - bt_results_c["date"].iloc[0]).days
             total_years_c = total_days_c / 365.25 if total_days_c > 0 else 1.0
             final_nav_c = bt_results_c["nav"].iloc[-1]
-
             cagr_c = ((final_nav_c / 100.0) ** (1 / total_years_c) - 1) * 100
             mdd_c = bt_results_c["drawdown"].min()
 
@@ -1711,34 +2201,253 @@ else:
             chart_df_c["qqq_nav"] = (100 * (1 + qqq_ret_series_c.fillna(0)).cumprod()).values
 
             nav_color_scale_c = alt.Scale(domain=["전략C", "QQQ"], range=["#8b5cf6", "#808080"])
-            nav_long_c = chart_df_c.melt(
-                id_vars="date_str", value_vars=["nav", "qqq_nav"], var_name="series", value_name="value"
-            )
+            nav_long_c = chart_df_c.melt(id_vars="date_str", value_vars=["nav", "qqq_nav"], var_name="series", value_name="value")
             nav_long_c["series"] = nav_long_c["series"].map({"nav": "전략C", "qqq_nav": "QQQ"})
 
             nav_chart_c = alt.Chart(nav_long_c).mark_line(size=2.5).encode(
                 x=alt.X("date_str:N", sort=None, title="년-월"),
                 y=alt.Y("value:Q", title="NAV (기준 100)"),
                 color=alt.Color("series:N", scale=nav_color_scale_c, legend=alt.Legend(title=None, orient="bottom")),
-                tooltip=[
-                    alt.Tooltip("date_str:N", title="년-월"),
-                    alt.Tooltip("series:N", title="구분"),
-                    alt.Tooltip("value:Q", title="NAV", format=".1f"),
-                ],
+                tooltip=[alt.Tooltip("date_str:N", title="년-월"), alt.Tooltip("series:N", title="구분"), alt.Tooltip("value:Q", title="NAV", format=".1f")],
             ).properties(height=350)
             st.altair_chart(nav_chart_c, use_container_width=True)
 
-            st.markdown("##### 🗓️ 월별 세부 리밸런싱 기록")
+            st.markdown("##### 📊 연도별 수익률 (%)")
+            yearly_df_c = bt_results_c.copy()
+            yearly_df_c["year"] = yearly_df_c["date"].dt.year
+            yearly_returns_c = yearly_df_c.groupby("year")["monthly_return"].apply(lambda x: (np.prod(1 + x / 100.0) - 1) * 100).reset_index(name="annual_return")
+            yearly_returns_c["year_str"] = yearly_returns_c["year"].astype(str)
+            yearly_returns_c["series"] = "전략C"
+            year_sort_order_c = yearly_returns_c["year_str"].tolist()
+
+            qqq_monthly_ret_c = monthly_px_c["QQQ"].pct_change().reindex(bt_results_c["date"]) * 100
+            qqq_ret_df_c = pd.DataFrame({"date": bt_results_c["date"].values, "qqq_return": qqq_monthly_ret_c.values})
+            qqq_ret_df_c["year"] = pd.to_datetime(qqq_ret_df_c["date"]).dt.year
+            qqq_yearly_c = qqq_ret_df_c.groupby("year")["qqq_return"].apply(lambda x: (np.prod(1 + x / 100.0) - 1) * 100).reset_index(name="annual_return")
+            qqq_yearly_c["year_str"] = qqq_yearly_c["year"].astype(str)
+            qqq_yearly_c["series"] = "QQQ"
+
+            color_scale_c = alt.Scale(domain=["전략C", "QQQ"], range=["#8b5cf6", "#808080"])
+            annual_bar_c = alt.Chart(yearly_returns_c).mark_bar(size=28).encode(
+                x=alt.X("year_str:N", title="연도", sort=year_sort_order_c),
+                y=alt.Y("annual_return:Q", title="수익률 (%)"),
+                color=alt.Color("series:N", scale=color_scale_c, legend=alt.Legend(title=None, orient="bottom")),
+                tooltip=[alt.Tooltip("year_str:N", title="연도"), alt.Tooltip("annual_return:Q", title="수익률", format="+.2f")],
+            )
+            annual_labels_c = alt.Chart(yearly_returns_c).mark_text(dy=alt.expr("datum.annual_return >= 0 ? -8 : 14"), fontWeight="bold", fontSize=11, color="#0f172a").encode(
+                x=alt.X("year_str:N", sort=year_sort_order_c), y=alt.Y("annual_return:Q"), text=alt.Text("annual_return:Q", format="+.1f")
+            )
+            qqq_points_c = alt.Chart(qqq_yearly_c).mark_point(filled=True, size=110, stroke="white", strokeWidth=1.2).encode(
+                x=alt.X("year_str:N", sort=year_sort_order_c), y=alt.Y("annual_return:Q"),
+                color=alt.Color("series:N", scale=color_scale_c, legend=alt.Legend(title=None, orient="bottom")),
+                tooltip=[alt.Tooltip("year_str:N", title="연도"), alt.Tooltip("annual_return:Q", title="QQQ 수익률", format="+.2f")],
+            )
+            st.altair_chart((annual_bar_c + annual_labels_c + qqq_points_c).properties(height=320), use_container_width=True)
+
+            st.markdown("##### 🗓️ 월별 수익률 (%)")
+            monthly_df_c = bt_results_c.copy()
+            monthly_df_c["year"] = monthly_df_c["date"].dt.year
+            monthly_df_c["month"] = monthly_df_c["date"].dt.month
+            month_labels_c = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun", 7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"}
+            monthly_df_c["month_label"] = monthly_df_c["month"].map(month_labels_c)
+            monthly_df_c["year_label"] = monthly_df_c["year"].astype(str)
+
+            avg_by_month_c = monthly_df_c.groupby(["month", "month_label"])["monthly_return"].mean().reset_index()
+            avg_by_month_c["year_label"] = "평균"
+            heat_df_c = pd.concat([monthly_df_c[["year_label", "month", "month_label", "monthly_return"]], avg_by_month_c[["year_label", "month", "month_label", "monthly_return"]]], ignore_index=True)
+            year_sort_order_full_c = [str(y) for y in sorted(monthly_df_c["year"].unique())] + ["평균"]
+            month_sort_order_c = [month_labels_c[m] for m in range(1, 13)]
+
+            heat_rect_c = alt.Chart(heat_df_c).mark_rect(stroke="white", strokeWidth=1.5).encode(
+                x=alt.X("month_label:N", title=None, sort=month_sort_order_c),
+                y=alt.Y("year_label:N", title=None, sort=year_sort_order_full_c),
+                color=alt.Color("monthly_return:Q", scale=alt.Scale(type="threshold", domain=[-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5], range=["#cf6265", "#e67f82", "#ecaaab", "#f6d4d5", "#fafbff", "#d7e4da", "#accab2", "#82ae8b", "#599265"]), legend=alt.Legend(title="수익률 (%)", orient="bottom", gradientLength=220)),
+                tooltip=[alt.Tooltip("year_label:N", title="연도"), alt.Tooltip("month_label:N", title="월"), alt.Tooltip("monthly_return:Q", title="수익률", format="+.2f")],
+            )
+            heat_text_c = alt.Chart(heat_df_c).mark_text(fontSize=10, fontWeight="bold").encode(
+                x=alt.X("month_label:N", sort=month_sort_order_c), y=alt.Y("year_label:N", sort=year_sort_order_full_c), text=alt.Text("monthly_return:Q", format="+.1f"), color=alt.value("#334155")
+            )
+            st.altair_chart((heat_rect_c + heat_text_c).properties(height=32 * len(year_sort_order_full_c) + 80), use_container_width=True)
+
+            st.markdown("##### 📉 낙폭 (Drawdown) 히스토리")
+            dd_chart_c = alt.Chart(chart_df_c).mark_area(color="#fecaca", opacity=0.8).encode(
+                x=alt.X("date_str:N", sort=None, title="년-월"), y=alt.Y("drawdown:Q", title="MDD (%)"), tooltip=["date_str", "drawdown"]
+            ).properties(height=200)
+            st.altair_chart(dd_chart_c, use_container_width=True)
+
+            st.markdown("##### 🚨 포트폴리오 드로우다운 Top 10")
+            dd_vals_c = bt_results_c["drawdown"].values
+            dd_dates_c = bt_results_c["date"].values
+            n_c = len(dd_vals_c)
+            episodes_c = []
+            i_ep_c = 0
+            while i_ep_c < n_c:
+                if dd_vals_c[i_ep_c] < -0.001:
+                    start_i_c = i_ep_c
+                    j_ep_c = i_ep_c
+                    min_val_c = dd_vals_c[i_ep_c]
+                    min_idx_c = i_ep_c
+                    while j_ep_c < n_c and dd_vals_c[j_ep_c] < -0.001:
+                        if dd_vals_c[j_ep_c] < min_val_c:
+                            min_val_c = dd_vals_c[j_ep_c]
+                            min_idx_c = j_ep_c
+                        j_ep_c += 1
+                    episodes_c.append({
+                        "시작": pd.Timestamp(dd_dates_c[start_i_c]).strftime("%Y/%m"),
+                        "종료": pd.Timestamp(dd_dates_c[min_idx_c]).strftime("%Y/%m"),
+                        "드로우다운": min_val_c,
+                    })
+                    i_ep_c = j_ep_c
+                else:
+                    i_ep_c += 1
+
+            episodes_c.sort(key=lambda x: x["드로우다운"])
+            top10_c = episodes_c[:10]
+            for idx, ep in enumerate(top10_c):
+                ep["순위"] = idx + 1
+                ep["드로우다운"] = f"{ep['드로우다운']:.1f}%"
+            if top10_c:
+                df_dd_top10_c = pd.DataFrame(top10_c)[["순위", "시작", "종료", "드로우다운"]]
+                st.dataframe(df_dd_top10_c, use_container_width=True, hide_index=True)
+
+            st.markdown("##### 🔻 폭락 시장 포트폴리오 성과")
+            STRESS_PERIODS_C = [
+                ("코로나 팬데믹", "2020-01-01", "2020-03-31"),
+                ("2022 긴축 발작 (금리인상기)", "2022-01-01", "2022-10-31"),
+                ("2018년 4분기 조정", "2018-10-01", "2018-12-31"),
+            ]
+            stress_rows_c = []
+            for label_c, s_str_c, e_str_c in STRESS_PERIODS_C:
+                s_ts_c, e_ts_c = pd.Timestamp(s_str_c), pd.Timestamp(e_str_c)
+                mask_c = (bt_results_c["date"] >= s_ts_c) & (bt_results_c["date"] <= e_ts_c)
+                sub_c = bt_results_c[mask_c]
+                if len(sub_c) == 0:
+                    continue
+                port_cum_c = (np.prod(1 + sub_c["monthly_return"].values / 100.0) - 1) * 100
+                bench_sub_ret_c = monthly_px_c["QQQ"].pct_change().reindex(sub_c["date"]).fillna(0.0)
+                bench_cum_c = (np.prod(1 + bench_sub_ret_c.values) - 1) * 100
+                stress_rows_c.append({
+                    "스트레스 기간": label_c,
+                    "시작": s_ts_c.strftime("%Y/%m"),
+                    "종료": e_ts_c.strftime("%Y/%m"),
+                    "포트폴리오 수익률": f"{port_cum_c:+.1f}%",
+                    "QQQ 수익률": f"{bench_cum_c:+.1f}%",
+                })
+            if stress_rows_c:
+                st.dataframe(pd.DataFrame(stress_rows_c), use_container_width=True, hide_index=True)
+
+            st.markdown("##### 📊 주요 지표 비교 (vs QQQ)")
+            def _fmt_pct_c(x):
+                return f"{x:.1f}%" if x is not None and not (isinstance(x, float) and np.isnan(x)) else "데이터 부족"
+
+            port_ret_arr_c = bt_results_c["monthly_return"].values
+            bench_ret_arr_c = qqq_monthly_ret_c.values
+            dd_arr_c = bt_results_c["drawdown"].values
+            bench_nav_arr_c = chart_df_c["qqq_nav"].values
+            bench_running_max_c = np.maximum.accumulate(bench_nav_arr_c)
+            bench_dd_arr_c = (bench_nav_arr_c / bench_running_max_c - 1) * 100
+
+            period_ret_c = (final_nav_c / 100.0 - 1) * 100
+            bench_final_nav_c = bench_nav_arr_c[-1]
+            bench_period_ret_c = (bench_final_nav_c / 100.0 - 1) * 100
+            bench_cagr_c = ((bench_final_nav_c / 100.0) ** (1 / total_years_c) - 1) * 100
+
+            last_date2_c = bt_results_c["date"].iloc[-1]
+            current_year2_c = last_date2_c.year
+            ytd_mask_c = bt_results_c["date"].dt.year == current_year2_c
+            port_ytd_c = (np.prod(1 + bt_results_c.loc[ytd_mask_c, "monthly_return"].values / 100.0) - 1) * 100
+            bench_ytd_c = (np.prod(1 + (bench_ret_arr_c[ytd_mask_c.values] / 100.0)) - 1) * 100
+
+            win_months_c = int((port_ret_arr_c > 0).sum())
+            bench_win_months_c = int((bench_ret_arr_c > 0).sum())
+            total_months_c = len(port_ret_arr_c)
+
+            mdd_idx_c = int(np.argmin(dd_arr_c))
+            mdd_date_c = bt_results_c["date"].iloc[mdd_idx_c].strftime("%Y-%m")
+            bench_mdd_idx_c = int(np.argmin(bench_dd_arr_c))
+            bench_mdd_date_c = bt_results_c["date"].iloc[bench_mdd_idx_c].strftime("%Y-%m")
+
+            def _trailing_c(arr, months):
+                if len(arr) < months:
+                    return None, None
+                window = arr[-months:]
+                cum = (np.prod(1 + window / 100.0) - 1) * 100
+                ann_std = np.std(window, ddof=1) * np.sqrt(12) if len(window) > 1 else None
+                return cum, ann_std
+
+            ret_1y_c, std_1y_c = _trailing_c(port_ret_arr_c, 12)
+            ret_3y_c, std_3y_c = _trailing_c(port_ret_arr_c, 36)
+            ret_5y_c, std_5y_c = _trailing_c(port_ret_arr_c, 60)
+            bench_ret_1y_c, bench_std_1y_c = _trailing_c(bench_ret_arr_c, 12)
+            bench_ret_3y_c, bench_std_3y_c = _trailing_c(bench_ret_arr_c, 36)
+            bench_ret_5y_c, bench_std_5y_c = _trailing_c(bench_ret_arr_c, 60)
+
+            mean_m_c = np.mean(port_ret_arr_c) / 100.0
+            std_m_c = np.std(port_ret_arr_c, ddof=1) / 100.0 if total_months_c > 1 else np.nan
+            annual_vol_c = std_m_c * np.sqrt(12) * 100 if not np.isnan(std_m_c) else np.nan
+            sharpe_c = (mean_m_c * 12) / (std_m_c * np.sqrt(12)) if std_m_c and std_m_c > 0 else np.nan
+
+            downside_c = port_ret_arr_c[port_ret_arr_c < 0] / 100.0
+            downside_std_c = np.std(downside_c, ddof=1) if len(downside_c) > 1 else np.nan
+            sortino_c = (mean_m_c * 12) / (downside_std_c * np.sqrt(12)) if downside_std_c and downside_std_c > 0 else np.nan
+
+            ulcer_c = np.sqrt(np.mean(dd_arr_c ** 2))
+            upi_c = cagr_c / ulcer_c if ulcer_c > 0 else np.nan
+
+            bench_mean_m_c = np.mean(bench_ret_arr_c) / 100.0
+            bench_std_m_c = np.std(bench_ret_arr_c, ddof=1) / 100.0 if total_months_c > 1 else np.nan
+            bench_annual_vol_c = bench_std_m_c * np.sqrt(12) * 100 if not np.isnan(bench_std_m_c) else np.nan
+            bench_sharpe_c = (bench_mean_m_c * 12) / (bench_std_m_c * np.sqrt(12)) if bench_std_m_c and bench_std_m_c > 0 else np.nan
+
+            bench_downside_c = bench_ret_arr_c[bench_ret_arr_c < 0] / 100.0
+            bench_downside_std_c = np.std(bench_downside_c, ddof=1) if len(bench_downside_c) > 1 else np.nan
+            bench_sortino_c = (bench_mean_m_c * 12) / (bench_downside_std_c * np.sqrt(12)) if bench_downside_std_c and bench_downside_std_c > 0 else np.nan
+
+            bench_ulcer_c = np.sqrt(np.mean(bench_dd_arr_c ** 2))
+            bench_upi_c = bench_cagr_c / bench_ulcer_c if bench_ulcer_c > 0 else np.nan
+
+            alloc_list_c = bt_results_c["alloc"].tolist()
+            monthly_turnovers_c = []
+            prev_alloc_c = {}
+            for alloc_d in alloc_list_c:
+                all_tk_c = set(prev_alloc_c.keys()) | set(alloc_d.keys())
+                diff_c = sum(abs(alloc_d.get(t, 0.0) - prev_alloc_c.get(t, 0.0)) for t in all_tk_c)
+                monthly_turnovers_c.append(diff_c / 2.0)
+                prev_alloc_c = alloc_d
+            avg_turnover_c = np.mean(monthly_turnovers_c) if monthly_turnovers_c else 0.0
+            annual_turnover_c = avg_turnover_c * 12
+
+            metrics_rows_c = [
+                ("기간 수익률", _fmt_pct_c(period_ret_c), _fmt_pct_c(bench_period_ret_c)),
+                ("연환산 수익률 (CAGR)", _fmt_pct_c(cagr_c), _fmt_pct_c(bench_cagr_c)),
+                ("이번 달 수익률", _fmt_pct_c(port_ret_arr_c[-1]), _fmt_pct_c(bench_ret_arr_c[-1])),
+                ("올해 수익률 (YTD)", _fmt_pct_c(port_ytd_c), _fmt_pct_c(bench_ytd_c)),
+                ("월 최고 수익률", _fmt_pct_c(port_ret_arr_c.max()), _fmt_pct_c(bench_ret_arr_c.max())),
+                ("월 최저 수익률", _fmt_pct_c(port_ret_arr_c.min()), _fmt_pct_c(bench_ret_arr_c.min())),
+                ("수익 월 비중", f"{win_months_c} / {total_months_c}", f"{bench_win_months_c} / {total_months_c}"),
+                ("연 변동성", _fmt_pct_c(annual_vol_c), _fmt_pct_c(bench_annual_vol_c)),
+                ("최대 낙폭 (MDD)", _fmt_pct_c(mdd_c), _fmt_pct_c(bench_dd_arr_c.min())),
+                ("MDD 시점", mdd_date_c, bench_mdd_date_c),
+                ("1년 수익률", _fmt_pct_c(ret_1y_c), _fmt_pct_c(bench_ret_1y_c)),
+                ("3년 수익률", _fmt_pct_c(ret_3y_c), _fmt_pct_c(bench_ret_3y_c)),
+                ("5년 수익률", _fmt_pct_c(ret_5y_c), _fmt_pct_c(bench_ret_5y_c)),
+                ("1년 표준편차", _fmt_pct_c(std_1y_c), _fmt_pct_c(bench_std_1y_c)),
+                ("3년 표준편차", _fmt_pct_c(std_3y_c), _fmt_pct_c(bench_std_3y_c)),
+                ("5년 표준편차", _fmt_pct_c(std_5y_c), _fmt_pct_c(bench_std_5y_c)),
+                ("샤프 지수", f"{sharpe_c:.2f}" if not np.isnan(sharpe_c) else "데이터 부족", f"{bench_sharpe_c:.2f}" if not np.isnan(bench_sharpe_c) else "데이터 부족"),
+                ("소티노 지수", f"{sortino_c:.2f}" if not np.isnan(sortino_c) else "데이터 부족", f"{bench_sortino_c:.2f}" if not np.isnan(bench_sortino_c) else "데이터 부족"),
+                ("UPI 지수", f"{upi_c:.2f}" if not np.isnan(upi_c) else "데이터 부족", f"{bench_upi_c:.2f}" if not np.isnan(bench_upi_c) else "데이터 부족"),
+                ("연간 턴오버", f"{annual_turnover_c:.1f}%", "0.0%"),
+            ]
+            df_metrics_c = pd.DataFrame(metrics_rows_c, columns=["지표", "전략C", "QQQ"])
+            st.dataframe(df_metrics_c, use_container_width=True, hide_index=True)
+
             display_bt_c = bt_results_c.copy()
             display_bt_c["연월"] = display_bt_c["date"].dt.strftime("%Y-%m")
             display_bt_c["월 수익률"] = display_bt_c["monthly_return"].apply(lambda x: f"{x:+.2f}%")
             display_bt_c["낙폭"] = display_bt_c["drawdown"].apply(lambda x: f"{x:.2f}%")
             display_bt_c["NAV"] = display_bt_c["nav"].apply(lambda x: f"{x:.1f}")
-
-            st.dataframe(
-                display_bt_c[["연월", "mode", "월 수익률", "weights_str", "NAV", "낙폭"]].iloc[::-1],
-                use_container_width=True, hide_index=True
-            )
+            st.dataframe(display_bt_c[["연월", "mode", "월 수익률", "weights_str", "NAV", "낙폭"]].iloc[::-1], use_container_width=True, hide_index=True)
 
     with c_rank:
         st.header("🇺🇸 실시간 미국 ETF 랭킹")
@@ -1879,3 +2588,22 @@ else:
         sum_col1.metric("총 순 원금(저축-지출)", format_krw(last_rec["누적 납입원금"]))
         sum_col2.metric("세후 최종 자산", format_krw(last_rec["세후 수령예정액"]))
         sum_col3.metric("실질구매력 가치", format_krw(last_rec["세후 실질가치 (물가반영)"]))
+
+        st.markdown("### 📈 미래 자산 성장 시뮬레이션")
+        df_melt = df_calc.melt(id_vars="년차", value_vars=["누적 납입원금", "세전 일반복리", "세후 수령예정액", "세후 실질가치 (물가반영)"], var_name="구분", value_name="자산액")
+        try:
+            line_chart = alt.Chart(df_melt).mark_line(point=True, size=2.5).encode(
+                x=alt.X("년차:N", sort=None, title="년차"),
+                y=alt.Y("자산액:Q", title="평가액 (₩)"),
+                color=alt.Color("구분:N", scale=alt.Scale(range=["#94a3b8", "#ef4444", "#10b981", "#3b82f6"])),
+                tooltip=[alt.Tooltip("년차"), alt.Tooltip("구분"), alt.Tooltip("자산액", format=",.0f")]
+            ).properties(height=350)
+            st.altair_chart(line_chart, use_container_width=True)
+        except Exception:
+            st.line_chart(df_calc.set_index("년차"))
+
+        st.markdown("### 📊 연도별 세부 자산 성장 상세표")
+        df_display = df_calc.copy()
+        for col in ["누적 납입원금", "세전 일반복리", "세후 수령예정액", "세후 실질가치 (물가반영)"]:
+            df_display[col] = df_display[col].apply(format_krw)
+        st.dataframe(df_display, use_container_width=True)
