@@ -1051,6 +1051,47 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
     return clean_portfolio, is_attack_a_hist, is_attack_b_hist, is_attack_c_hist, dy_val
 
 # ============================================================
+# 자산 계산기 퀵 프리셋용: 각 전략 탭의 '초기 설정'과 같은 조건의 실측 CAGR
+#   - 초기 설정 = 백테스트 시작일 2015-01-01 (장기 검증), 혼합전략 안전장치(비중 상한·하드스탑) 미적용
+#   - 각 전략 탭과 동일한 종목·엔진·CAGR 계산식(일수 ÷ 365.25)을 사용하므로 탭에 표시되는 값과 일치합니다.
+# ============================================================
+PRESET_START = "2015-01-01"
+PRESET_FALLBACK_CAGR = {"mix": 38.7, "A": 27.3, "B": 36.4, "C": 46.7}  # 데이터 로딩 실패 시에만 사용
+
+
+def _cagr_from_bt(bt):
+    days = (bt["date"].iloc[-1] - bt["date"].iloc[0]).days
+    years = days / 365.25 if days > 0 else 1.0
+    return ((bt["nav"].iloc[-1] / 100.0) ** (1 / years) - 1) * 100
+
+
+@st.cache_data(ttl=3600)
+def get_preset_cagrs(start=PRESET_START):
+    out = {}
+    try:
+        spy_divs = get_spy_dividend_history()
+    except Exception:
+        spy_divs = pd.Series(dtype=float)
+    specs = {
+        "A": (sorted(set(OFFENSIVE_A + DEFENSIVE_A + ["TIP", "QQQ"])), lambda m: run_backtest_strategy_a_full(m)),
+        "B": (sorted(set(OFFENSIVE_B + DEFENSIVE_B + ["TIP", "QQQ"])), lambda m: run_backtest_strategy_b_full(m)),
+        "C": (sorted(set(OFFENSIVE_C + DEFENSIVE_C + ["SPY", "QQQ"])), lambda m: run_backtest_strategy_c_full(m, spy_divs)),
+        "mix": (
+            sorted(set(OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C + ["TIP", "SPY", "QQQ"])),
+            lambda m: run_backtest_strategy_mix_full(m, spy_divs),
+        ),
+    }
+    for key, (tickers, runner) in specs.items():
+        try:
+            daily = get_daily_price_history_a(tickers, start=start)
+            bt = runner(to_monthly_last_a(daily))
+            out[key] = round(float(_cagr_from_bt(bt)), 2) if len(bt) > 0 else None
+        except Exception:
+            out[key] = None
+    return out
+
+
+# ============================================================
 # 월중 하드스탑 실시간 모니터 (이번 달 일별 수익률 추적)
 #   - 직전 월말에 확정된 혼합 포트폴리오를 이번 달 보유 포트폴리오로 보고,
 #     직전 월말 종가 대비 일별 누적 수익률을 백테스트와 같은 방식(비중 × 종목 누적수익률 합)으로 계산합니다.
@@ -3981,36 +4022,46 @@ digraph G {
             "미래 자산의 실제 성장 경로를 정밀하게 예측합니다. **세율 적용**, **생활비 지출 설정**, 및 **물가상승률 할인**까지 연산하는 실전형 자산 시뮬레이터입니다."
         )
 
+        _preset_cagr = get_preset_cagrs()
+
+        def _pv(k):
+            v = _preset_cagr.get(k)
+            return float(v) if v is not None else float(PRESET_FALLBACK_CAGR[k])
+
         if "cagr_input" not in st.session_state:
-            st.session_state.cagr_input = 38.7
+            st.session_state.cagr_input = 25.0  # 계산기 초기값 (퀵 프리셋 버튼으로 전략별 실측값 선택 가능)
 
         st.markdown("##### ⚡ 자산배분 전략 실측 CAGR 퀵 프리셋")
         col_pre1, col_pre2, col_pre3, col_pre4 = st.columns(4)
-        if col_pre1.button("🏆 2026 혼합 (38.7%)"):
-            st.session_state.cagr_input = 38.7
+        if col_pre1.button(f"🏆 2026 혼합 ({_pv('mix'):.2f}%)"):
+            st.session_state.cagr_input = _pv("mix")
             st.rerun()
-        if col_pre2.button("🛡️ 전략 A (27.3%)"):
-            st.session_state.cagr_input = 27.3
+        if col_pre2.button(f"🛡️ 전략 A ({_pv('A'):.2f}%)"):
+            st.session_state.cagr_input = _pv("A")
             st.rerun()
-        if col_pre3.button("⚡ 전략 B (36.4%)"):
-            st.session_state.cagr_input = 36.4
+        if col_pre3.button(f"⚡ 전략 B ({_pv('B'):.2f}%)"):
+            st.session_state.cagr_input = _pv("B")
             st.rerun()
-        if col_pre4.button("🔄 전략 C (46.7%)"):
-            st.session_state.cagr_input = 46.7
+        if col_pre4.button(f"🔄 전략 C ({_pv('C'):.2f}%)"):
+            st.session_state.cagr_input = _pv("C")
             st.rerun()
+        if all(_preset_cagr.get(k) is not None for k in ["mix", "A", "B", "C"]):
+            st.caption(f"※ 각 전략 탭의 초기 설정(백테스트 시작일 {PRESET_START}, 안전장치 미적용) 기준 실측 CAGR이며, 전략 탭의 '연환산 복리 수익률(CAGR)'과 같은 값입니다.")
+        else:
+            st.caption("※ 일부 전략의 실측 CAGR을 불러오지 못해 기존 참고값을 표시 중입니다. 잠시 후 새로고침해 주세요.")
 
         st.markdown("---")
         col_inp1, col_inp2 = st.columns(2)
         with col_inp1:
-            calc_init = st.number_input("초기 투자금 (만원 ₩)", min_value=0, value=2000, step=100)
-            calc_monthly = st.number_input("매월 저축/적립금 (만원 ₩)", min_value=0, value=100, step=10)
+            calc_init = st.number_input("초기 투자금 (만원 ₩)", min_value=0, value=10000, step=100)
+            calc_monthly = st.number_input("매월 저축/적립금 (만원 ₩)", min_value=0, value=0, step=10)
             calc_expense = st.number_input("매월 지출/생활비 (만원 ₩)", min_value=0, value=0, step=10, help="투자수익에서 정기 지출하는 생활비가 있다면 마이너스로 처리됩니다.")
-            calc_years = st.slider("시뮬레이션 투자 기간 (년)", min_value=1, max_value=40, value=15)
+            calc_years = st.slider("시뮬레이션 투자 기간 (년)", min_value=1, max_value=40, value=20)
         with col_inp2:
-            calc_cagr = st.number_input("연 목표 수익률 CAGR (%)", min_value=0.0, max_value=100.0, key="cagr_input", step=0.1)
+            calc_cagr = st.number_input("연 목표 수익률 CAGR (%)", min_value=0.0, max_value=100.0, key="cagr_input", step=0.1, format="%.2f")
             calc_inflation = st.number_input("연 예상 물가상승률 (%)", min_value=0.0, max_value=20.0, value=3.0, step=0.1)
             calc_expense_start = st.number_input("지출 시작 시점 (년차)", min_value=1, max_value=max(1, calc_years), value=1, step=1, help="생활비 지출을 몇 년차부터 적용할지 연차를 지정합니다.")
-            calc_tax_opt = st.selectbox("세율 설정", ["일반과세 (15.4%)", "미국주식양도세 (22.0%)", "비과세 계좌 (0.0% / ISA 및 연금저축)", "사용자 정의"])
+            calc_tax_opt = st.selectbox("세율 설정", ["일반과세 (15.4%)", "미국주식양도세 (22.0%)", "비과세 계좌 (0.0% / ISA 및 연금저축)", "사용자 정의"], index=1)
         
         if calc_tax_opt == "일반과세 (15.4%)":
             tax_rate = 15.4
