@@ -488,7 +488,7 @@ def run_backtest_strategy_mix_full(monthly_px, spy_divs):
 #   - 2019년 5월 무역전쟁 급락(-13.0% MDD) 원인 분석 결과, 특정 자산(SMH 41.66%, UPRO 33.33% 등)에
 #     3개 전략의 비중이 중복 쏠리는 현상이 최대 낙폭의 핵심 원인으로 확인되었습니다.
 #   - 1단계 개선: 단일 자산군 비중 상한(Cap)
-#     3개 전략(각 33.33%)을 합산했을 때 특정 티커의 최종 비중이 상한(기본 25%)을 넘으면
+#     3개 전략(각 33.33%)을 합산했을 때 특정 티커의 최종 비중이 상한(기본 35%)을 넘으면
 #     초과분을 현금(CASH)으로 자동 전환하여 강제 분산시킵니다.
 #   - 2단계 개선: 월중 하드스탑(Intra-month Stop-loss)
 #     일별 가격으로 월중 누적 손실을 감시하다가, 포트폴리오가 월초(전월 말 종가) 대비 임계치
@@ -497,7 +497,7 @@ def run_backtest_strategy_mix_full(monthly_px, spy_divs):
 @st.cache_data(ttl=3600)
 def run_backtest_strategy_mix_improved_full(
     monthly_px, spy_divs, daily_px=None,
-    apply_cap=False, weight_cap=25.0,
+    apply_cap=False, weight_cap=35.0,
     apply_stop_loss=False, stop_loss_pct=-7.0,
 ):
     bt_a = run_backtest_strategy_a_full(monthly_px)
@@ -594,7 +594,7 @@ def run_backtest_strategy_mix_improved_full(
                 stop_triggered = cum_val[cum_val * 100.0 <= stop_loss_pct]
                 if len(stop_triggered) > 0:
                     port_ret = stop_triggered.iloc[0]
-                    stop_note = " 🛑월중손절"
+                    stop_note = f" 🛑월중손절({stop_triggered.index[0].strftime('%m/%d')})"
                 elif len(cum_val) > 0:
                     port_ret = cum_val.iloc[-1]  # 일별 경로 기준 최종 수익률 (월간 수익률과 근사적으로 일치)
 
@@ -867,7 +867,7 @@ def get_historical_simulation_data(tickers):
     
     return prices_dict, spy_divs
 
-def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date, OFFENSIVE_A, DEFENSIVE_A, OFFENSIVE_B, DEFENSIVE_B, OFFENSIVE_C, DEFENSIVE_C):
+def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date, OFFENSIVE_A, DEFENSIVE_A, OFFENSIVE_B, DEFENSIVE_B, OFFENSIVE_C, DEFENSIVE_C, return_parts=False):
     monthly_prices = {}
     for t, series in prices_dict.items():
         sub_series = series[series.index <= target_date]
@@ -885,6 +885,9 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
         monthly_prices[t] = m_closes
 
     if "TIP" not in monthly_prices or "SPY" not in monthly_prices:
+        if return_parts:
+            _cash = {"CASH (현금)": 100.0}
+            return {"CASH (현금)": 100.0}, False, False, False, 1.32, {"A": dict(_cash), "B": dict(_cash), "C": dict(_cash)}
         return {"CASH (현금)": 100.0}, False, False, False, 1.32
 
     def calc_momentum_and_scores(m_closes):
@@ -1041,7 +1044,294 @@ def compute_historical_portfolio_at_month_end(prices_dict, spy_divs, target_date
         mixed_portfolio[t] = mixed_portfolio.get(t, 0.0) + (w / 100.0) * 33.333
 
     clean_portfolio = {t: round(w, 2) for t, w in mixed_portfolio.items() if w > 0.01}
+    if return_parts:
+        return clean_portfolio, is_attack_a_hist, is_attack_b_hist, is_attack_c_hist, dy_val, {
+            "A": dict(alloc_a_hist), "B": dict(alloc_b_hist), "C": dict(alloc_c_hist),
+        }
     return clean_portfolio, is_attack_a_hist, is_attack_b_hist, is_attack_c_hist, dy_val
+
+# ============================================================
+# 월중 하드스탑 실시간 모니터 (이번 달 일별 수익률 추적)
+#   - 직전 월말에 확정된 혼합 포트폴리오를 이번 달 보유 포트폴리오로 보고,
+#     직전 월말 종가 대비 일별 누적 수익률을 백테스트와 같은 방식(비중 × 종목 누적수익률 합)으로 계산합니다.
+# ============================================================
+@st.cache_data(ttl=300)
+def get_intramonth_daily_prices(tickers, start):
+    """보유 종목의 일별 종가 (5분 캐시). tickers는 tuple."""
+    tickers = list(tickers)
+    if not tickers:
+        return pd.DataFrame()
+    try:
+        df = yf.download(tickers, start=start, interval="1d", progress=False, auto_adjust=True)
+    except Exception:
+        return pd.DataFrame()
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+    if isinstance(df.columns, pd.MultiIndex):
+        close = df["Close"] if "Close" in df.columns.levels[0] else df
+    else:
+        close = df[["Close"]].rename(columns={"Close": tickers[0]}) if "Close" in df.columns else df
+    if isinstance(close, pd.Series):
+        close = close.to_frame(tickers[0])
+    if getattr(close.index, "tz", None) is not None:
+        close.index = close.index.tz_localize(None)
+    return close.dropna(how="all")
+
+
+def render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="mix"):
+    """strategy: "mix"(혼합전략) 또는 "A" / "B" / "C"(개별 전략, 전략 자산의 100% 기준)."""
+    is_mix = strategy == "mix"
+    label = "혼합" if is_mix else f"전략 {strategy}"
+    if is_mix:
+        st.markdown("### 🛑 월중 하드스탑 모니터 (이번 달 일별 수익률)")
+    else:
+        st.markdown(f"### 📈 전략 {strategy} 이번 달 일별 수익률")
+    st.caption("⚠️ 슬리피지·거래비용·세금·환전 비용은 반영되지 않았습니다. 실제 체결 가격과 계좌 수익률은 이 값과 다를 수 있습니다.")
+
+    if is_mix:
+        stop_pct = float(st.session_state.get("mix_stop_pct", -7.0))
+        cap_on = bool(st.session_state.get("apply_cap_mix", False))
+        cap_pct = float(st.session_state.get("mix_cap_pct", 35.0))
+    else:
+        stop_pct = None  # 개별 전략은 월중 하드스탑을 운용하지 않음
+        cap_on = False
+        cap_pct = 100.0
+
+    if not hist_prices or "SPY" not in hist_prices:
+        st.warning("일별 가격 데이터를 불러오지 못해 이번 달 일별 수익률을 표시할 수 없습니다.")
+        return
+
+    # 1) 직전 완료 월말(= 이번 달 포트폴리오를 확정한 날) 찾기
+    spy_idx = hist_prices["SPY"].index
+    if getattr(spy_idx, "tz", None) is not None:
+        spy_idx = spy_idx.tz_localize(None)
+    now = datetime.datetime.now()
+    month_ends = pd.Series(spy_idx, index=spy_idx).groupby([spy_idx.year, spy_idx.month]).max().tolist()
+    completed = [d for d in month_ends if not (d.year == now.year and d.month == now.month)]
+    if not completed:
+        st.info("직전 월말 데이터가 없습니다.")
+        return
+    base_date = pd.Timestamp(completed[-1])
+
+    # 2) 그 월말 기준 혼합 포트폴리오 (월말 리밸런싱 역사와 같은 계산)
+    held_mix, _, _, _, _, parts = compute_historical_portfolio_at_month_end(
+        hist_prices, spy_divs_hist, base_date,
+        OFFENSIVE_A, DEFENSIVE_A, OFFENSIVE_B, DEFENSIVE_B, OFFENSIVE_C, DEFENSIVE_C,
+        return_parts=True,
+    )
+    held = held_mix if is_mix else parts.get(strategy, {"CASH (현금)": 100.0})
+    held = {t: w for t, w in held.items() if w > 0.01}
+    pre_cap = dict(held)  # 상한 적용 전 합산 비중 (전략별 분해용)
+
+    # 비중 상한이 켜져 있으면 백테스트와 동일하게 초과분을 현금으로
+    cap_note = ""
+    if cap_on:
+        excess = 0.0
+        capped = {}
+        for t, w in held.items():
+            if t == "CASH (현금)":
+                continue
+            if w > cap_pct:
+                capped[t] = cap_pct
+                excess += w - cap_pct
+            else:
+                capped[t] = w
+        capped["CASH (현금)"] = held.get("CASH (현금)", 0.0) + excess
+        held = {t: w for t, w in capped.items() if w > 0.01}
+        if excess > 0.01:
+            cap_note = f" · 비중 상한 {cap_pct:.0f}% 적용(초과분 {excess:.1f}%p 현금)"
+
+    risky = [t for t in held if t != "CASH (현금)"]
+    st.caption(
+        f"보유 기준: {base_date.strftime('%Y-%m-%d')} 월말 확정 {label} 포트폴리오{cap_note} · "
+        f"기준가: 같은 날 종가 · "
+        f"{f'하드스탑 임계치 {stop_pct:.1f}% (백테스트 설정값과 연동) · ' if is_mix else ''}가격은 5분마다 갱신"
+    )
+
+    if st.button("🔄 최신 가격으로 새로고침", key=f"intramonth_refresh_{strategy}"):
+        get_intramonth_daily_prices.clear()
+
+    if not risky:
+        st.info(f"이번 달 {label} 포트폴리오는 전량 현금 보유라 월중 손실 위험이 없습니다.")
+        return
+
+    start = (base_date - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+    px = get_intramonth_daily_prices(tuple(sorted(risky)), start)
+    missing = [t for t in risky if t not in px.columns]
+    if px.empty or missing:
+        # 실패 시 1시간 캐시된 일별 데이터로 대체
+        px = pd.DataFrame({t: hist_prices[t] for t in risky if t in hist_prices})
+        if getattr(px.index, "tz", None) is not None:
+            px.index = px.index.tz_localize(None)
+    px = px.sort_index().ffill()
+
+    base_px = px[px.index <= base_date]
+    month_px = px[px.index > base_date]
+    if base_px.empty:
+        st.warning("기준일 종가를 찾지 못했습니다.")
+        return
+    if month_px.empty:
+        st.info(f"{base_date.strftime('%Y-%m-%d')} 이후 아직 거래일 데이터가 없습니다. 첫 거래일 장 마감 뒤 다시 확인하세요.")
+        return
+    base_row = base_px.iloc[-1]
+
+    # 3) 일별 누적 수익률 = Σ 비중 × (종가 / 기준가 − 1)  (백테스트 하드스탑과 동일)
+    cum = pd.Series(0.0, index=month_px.index)
+    contrib_rows = []
+    rets = {}
+    for t in risky:
+        w = held[t] / 100.0
+        b = base_row.get(t, np.nan)
+        if t not in month_px.columns or pd.isna(b) or b == 0:
+            continue
+        t_ret = (month_px[t] / b - 1.0).fillna(0.0)
+        rets[t] = t_ret
+        cum = cum + w * t_ret
+        last_px = month_px[t].dropna().iloc[-1] if month_px[t].notna().any() else np.nan
+        contrib_rows.append({
+            "자산 (Ticker)": t,
+            "비중 (%)": round(held[t], 2),
+            "월초 기준가 ($)": round(float(b), 2),
+            "최근 종가 ($)": round(float(last_px), 2) if pd.notna(last_px) else None,
+            "월초 대비 (%)": round(float(t_ret.iloc[-1] * 100), 2),
+            "포트폴리오 기여 (%p)": round(float(w * t_ret.iloc[-1] * 100), 2),
+        })
+    if "CASH (현금)" in held:
+        contrib_rows.append({
+            "자산 (Ticker)": "CASH (현금)", "비중 (%)": round(held["CASH (현금)"], 2),
+            "월초 기준가 ($)": None, "최근 종가 ($)": None,
+            "월초 대비 (%)": 0.0, "포트폴리오 기여 (%p)": 0.0,
+        })
+
+    # 혼합전략: 전략 A·B·C별 기여로 분해 (각 전략 비중 × 1/3, 상한 적용 시 티커별 비례 축소)
+    part_cum = {}
+    if is_mix:
+        for X in ("A", "B", "C"):
+            c_x = pd.Series(0.0, index=month_px.index)
+            for t, w_raw in parts.get(X, {}).items():
+                if t == "CASH (현금)" or t not in rets:
+                    continue
+                scale = held.get(t, 0.0) / pre_cap[t] if (cap_on and pre_cap.get(t, 0.0) > 0) else 1.0
+                c_x = c_x + (w_raw / 100.0) * (1.0 / 3.0) * scale * rets[t]
+            part_cum[X] = c_x
+        cum = part_cum["A"] + part_cum["B"] + part_cum["C"]  # 합계 = A + B + C
+
+    cum_pct = cum * 100.0
+    nav = 1.0 + cum
+    daily_pct = (nav / nav.shift(1).fillna(1.0) - 1.0) * 100.0
+    part_cum_pct, part_daily_pct = {}, {}
+    if is_mix:
+        prev_nav = nav.shift(1).fillna(1.0)
+        for X, c_x in part_cum.items():
+            part_cum_pct[X] = c_x * 100.0
+            # 일간 기여 = 전략 누적 증가분 ÷ 전일 포트폴리오 가치 → 세 전략 합이 일간 합계와 정확히 일치
+            part_daily_pct[X] = (c_x - c_x.shift(1).fillna(0.0)) / prev_nav * 100.0
+
+    last_cum = float(cum_pct.iloc[-1])
+    last_daily = float(daily_pct.iloc[-1])
+    worst_cum = float(cum_pct.min())
+    if is_mix:
+        room = last_cum - stop_pct
+        hit = cum_pct[cum_pct <= stop_pct]
+        m1, m2, m3, m4 = st.columns(4)
+    else:
+        m1, m2, m3 = st.columns(3)
+    m1.metric("월초 대비 누적", f"{last_cum:+.2f}%")
+    m2.metric(f"최근일 ({cum_pct.index[-1].strftime('%m/%d')})", f"{last_daily:+.2f}%")
+    m3.metric("이번 달 최저 누적", f"{worst_cum:+.2f}%")
+    if is_mix:
+        m4.metric("하드스탑까지 여유", f"{room:+.2f}%p")
+        st.caption(
+            f"월초 대비 누적 {last_cum:+.2f}% = "
+            f"A {part_cum_pct['A'].iloc[-1]:+.2f}%p + B {part_cum_pct['B'].iloc[-1]:+.2f}%p + C {part_cum_pct['C'].iloc[-1]:+.2f}%p  ·  "
+            f"최근일 {last_daily:+.2f}% = "
+            f"A {part_daily_pct['A'].iloc[-1]:+.2f}%p + B {part_daily_pct['B'].iloc[-1]:+.2f}%p + C {part_daily_pct['C'].iloc[-1]:+.2f}%p"
+        )
+
+    if not is_mix:
+        pass
+    elif len(hit) > 0:
+        st.error(
+            f"🛑 하드스탑 발동: {hit.index[0].strftime('%Y-%m-%d')} 종가 기준 누적 {hit.iloc[0]:.2f}%로 "
+            f"임계치 {stop_pct:.1f}%에 도달했습니다. 규칙상 전량 현금화 후 월말 리밸런싱까지 대기합니다."
+        )
+    elif room <= 2.0:
+        st.warning(f"⚠️ 주의: 하드스탑 임계치({stop_pct:.1f}%)까지 {room:.2f}%p 남았습니다.")
+    else:
+        st.success(f"✅ 정상: 하드스탑 임계치({stop_pct:.1f}%)까지 {room:.2f}%p 여유가 있습니다.")
+
+    df_days = pd.DataFrame({
+        "날짜": cum_pct.index,
+        "일간 수익률 (%)": daily_pct.values,
+        "월초 대비 누적 (%)": cum_pct.values,
+    })
+    try:
+        base = alt.Chart(df_days).encode(x=alt.X("날짜:T", title=None, axis=alt.Axis(format="%m/%d")))
+        if is_mix:
+            df_long = pd.concat([
+                pd.DataFrame({"날짜": cum_pct.index, "전략": f"전략 {X}", "일간 기여 (%p)": part_daily_pct[X].values})
+                for X in ("A", "B", "C")
+            ])
+            bars = alt.Chart(df_long).mark_bar(opacity=0.6).encode(
+                x=alt.X("날짜:T", title=None, axis=alt.Axis(format="%m/%d")),
+                y=alt.Y("sum(일간 기여 (%p)):Q", title="수익률 (%)"),
+                color=alt.Color("전략:N", scale=alt.Scale(domain=["전략 A", "전략 B", "전략 C"], range=["#3b82f6", "#f59e0b", "#10b981"]),
+                                legend=alt.Legend(orient="top", title=None)),
+                tooltip=[alt.Tooltip("날짜:T", format="%Y-%m-%d"), "전략:N", alt.Tooltip("일간 기여 (%p):Q", format=".2f")],
+            )
+        else:
+            bars = base.mark_bar(opacity=0.45).encode(
+                y=alt.Y("일간 수익률 (%):Q", title="수익률 (%)"),
+                color=alt.condition("datum['일간 수익률 (%)'] >= 0", alt.value("#16a34a"), alt.value("#dc2626")),
+                tooltip=[alt.Tooltip("날짜:T", format="%Y-%m-%d"), alt.Tooltip("일간 수익률 (%):Q", format=".2f")],
+            )
+        line = base.mark_line(point=True, color="#1e293b").encode(
+            y="월초 대비 누적 (%):Q",
+            tooltip=[alt.Tooltip("날짜:T", format="%Y-%m-%d"), alt.Tooltip("월초 대비 누적 (%):Q", format=".2f")],
+        )
+        zero = alt.Chart(pd.DataFrame({"y": [0.0]})).mark_rule(color="#94a3b8").encode(y="y:Q")
+        layers = bars + line + zero
+        if is_mix:
+            rule = alt.Chart(pd.DataFrame({"y": [stop_pct]})).mark_rule(color="#dc2626", strokeDash=[6, 4]).encode(y="y:Q")
+            layers = layers + rule
+        st.altair_chart(layers.properties(height=260), use_container_width=True)
+        if is_mix:
+            st.caption(f"막대 = 일간 수익률의 전략별 기여(A·B·C 누적 막대, 합계 = 일간 합계), 선 = 월초 대비 누적 합계, 빨간 점선 = 하드스탑 임계치 {stop_pct:.1f}%")
+        else:
+            st.caption("막대 = 일간 수익률, 선 = 월초 대비 누적 수익률")
+    except Exception:
+        st.line_chart(df_days.set_index("날짜")["월초 대비 누적 (%)"])
+
+    if is_mix:
+        df_days_view = pd.DataFrame({
+            "날짜": cum_pct.index,
+            "일간 A (%p)": part_daily_pct["A"].values,
+            "일간 B (%p)": part_daily_pct["B"].values,
+            "일간 C (%p)": part_daily_pct["C"].values,
+            "일간 합계 (%)": daily_pct.values,
+            "누적 A (%p)": part_cum_pct["A"].values,
+            "누적 B (%p)": part_cum_pct["B"].values,
+            "누적 C (%p)": part_cum_pct["C"].values,
+            "월초 대비 누적 합계 (%)": cum_pct.values,
+        }).sort_values("날짜", ascending=False)
+        df_days_view["하드스탑까지 여유 (%p)"] = df_days_view["월초 대비 누적 합계 (%)"] - stop_pct
+    else:
+        df_days_view = df_days.sort_values("날짜", ascending=False).copy()
+    df_days_view["날짜"] = df_days_view["날짜"].dt.strftime("%Y-%m-%d")
+    st.dataframe(
+        df_days_view.round(2), use_container_width=True, hide_index=True,
+        height=(len(df_days_view) + 1) * 35 + 3,
+    )
+
+    st.markdown("**종목별 월초 대비 수익률과 기여도**")
+    df_contrib = pd.DataFrame(contrib_rows).sort_values("포트폴리오 기여 (%p)")
+    st.dataframe(df_contrib, use_container_width=True, hide_index=True,
+                 height=(len(df_contrib) + 1) * 35 + 3)
+    if is_mix:
+        st.caption("※ 일별 종가 기준입니다. 장중에는 최근일 값이 실시간 가격으로 계속 바뀌며, 규칙상 판정은 종가로 합니다. 월중 리밸런싱이 없는 매수 후 보유 가정이며, 슬리피지·거래비용·세금은 반영되지 않았습니다.")
+    else:
+        st.caption("※ 일별 종가 기준입니다. 장중에는 최근일 값이 실시간 가격으로 계속 바뀝니다. 월중 리밸런싱이 없는 매수 후 보유 가정이며, 슬리피지·거래비용·세금은 반영되지 않았습니다.")
+
 
 with st.spinner("야후 파이낸스 실시간 데이터를 통합 집계 중..."):
     df_all = get_all_financial_data_v2(ALL_TICKERS)
@@ -1314,57 +1604,169 @@ else:
             "각각 **$33.33\\%$씩 동일 비중**으로 혼합하여 시장 전반의 변동성을 완벽하게 제어하는 2026년 추천 전략 모델입니다."
         )
 
-        with st.expander("📖 2026 동적 자산배분 혼합 전략 명세서 (작동원칙)", expanded=False):
-            st.markdown("""
-            ### 🎯 혼합전략 개요
-            본 전략은 시장의 거시경제 지표와 자산별 모멘텀을 실시간으로 추적하여 작동합니다. 성격이 서로 다른
-            3가지 동적 자산배분 전략(안정형, 공격형, 섹터로테이션)을 각각 **33.33%의 동일 비중**으로 혼합하여
-            극대화된 안정성과 풍부한 수익성의 균형을 달성하는 것을 목표로 합니다.
+        with st.expander("📖 2026 혼합전략 명세서", expanded=False):
+            st.markdown(r"""
+## 개요
 
-            ---
-            #### 🛡️ 전략 A: 대형 우량 자산 안정형 (배분 비중 33.33%)
-            물가연동채(TIP)를 통해 거시경제 국면을 판독하고, 대형 우량 자산 중심의 안정 투자를 지향합니다.
-            * **카나리아**: TIP 현재가 vs 11개월 이동평균(11MA) — 현재가 > 11MA면 공격, 이하면 방어
-            * **공격 자산군 (12개)**: `QQQ, FEZ, GLD, IBB, SMH, EEM, XLK, LIT, XLE, UBT, XLV, QTUM`
-            * **방어 자산군 (5개)**: `BIL, IEF, AGG, HYG, TBF`
-            * **운용 가이드**: 공격 시 1·3·6·12개월 단순평균 모멘텀 상위 4종목에 각 25%씩 균등 분배. 방어 시 1·3·6·9·12개월 단순평균 모멘텀 1위 자산에 100% 투자하되, 그 스코어마저 0 이하면 현금 100%로 대피.
+2026 혼합전략은 성격이 다른 3개 동적 자산배분 전략(A 안정형, B 레버리지 공격형, C 섹터로테이션)을 각 33.33% 동일 비중으로 합친 월간 리밸런싱 전략입니다. 벤치마크는 QQQ입니다.
 
-            #### ⚡ 전략 B: 레버리지 공격형 (배분 비중 33.33%)
-            채권 실질금리 모멘텀의 급격한 변화를 바탕으로 3배 레버리지 자산에 초집중 투자합니다.
-            * **카나리아**: TIP의 1·3·6·9·12개월 단순평균 모멘텀 — 양수(> 0)면 공격, 이하면 방어
-            * **공격 자산군 (3개)**: `TYD(미국채 3X), UPRO(S&P500 3X), VNQ(리츠)`
-            * **방어 자산군 (3개)**: `DOG(다우 인버스), RWM(러셀 인버스), TBF(미국채 장기 인버스)`
-            * **운용 가이드**: 공격 시 가중평균 모멘텀 1위 자산에 100% 몰빵. 방어 시 최근 5개월 단순 수익률 1위 자산에 투자하되, 해당 자산 자체의 단순평균 모멘텀이 음수면 현금 100%로 피신.
+| 구성 요소 | 카나리아(국면 판단) | 공격 시 | 방어 시 |
+| --- | --- | --- | --- |
+| 전략 A (안정형) | TIP 현재가 vs 11개월 이동평균 | 모멘텀 상위 4종목 × 25% | 모멘텀 1위 100% 또는 현금 |
+| 전략 B (공격형) | TIP 1·3·6·9·12개월 평균 모멘텀 부호 | 가중 모멘텀 1위 100% | 5개월 수익률 1위 100% 또는 현금 |
+| 전략 C (섹터로테이션) | SPY 12개월 배당수익률 > 1.33% | 모멘텀 1위 섹터 100% | 모멘텀 1위 100% 또는 현금 |
 
-            #### 🔄 전략 C: 배당 기반 섹터 로테이션 (배분 비중 33.33%)
-            S&P 500의 실시간 배당수익률을 기반으로 주식 저평가/과열 국면을 판독합니다.
-            * **카나리아**: SPY 실시간 배당수익률 — 1.33% 초과면 공격, 이하면 방어
-            * **공격 자산군 (7개)**: `FDN, LIT, SMH, XLE, IGV, QQQM, XLU`
-            * **방어 자산군 (5개)**: `GLD, PDBC, OILK, SHY, TLT`
-            * **운용 가이드**: 공격 시 1·3·6·12개월 단순평균 모멘텀 1위 섹터에 100% 투자. 방어 시 1·3·6·9·12개월 단순평균 모멘텀 1위 자산에 투자하되, 그 스코어마저 0 이하면 현금 100%로 대피.
+선택 적용 리스크 장치로 단일 자산 비중 상한(기본 35%)과 월중 하드스탑(기본 -7%)이 있습니다. 둘 다 백테스트 설정 패널의 체크박스로 켜고 끄며, 기본 상태는 꺼짐입니다.
 
-            ---
-            #### 📝 핵심 모멘텀 스코어 산출 공식
-            1. **단순 평균 모멘텀 스코어** (전략 A·C 공격형): 최근 1년 단기·중기·장기 수익률을 균등 반영
-            $$\\text{Momentum Score} = \\frac{R_1 + R_3 + R_6 + R_{12}}{4}$$
-            2. **방어 자산용 장기 모멘텀 스코어** (전략 A·B·C 방어형): 9개월 구간을 추가해 더 보수적으로 평가
-            $$\\text{Defensive Momentum} = \\frac{R_1 + R_3 + R_6 + R_9 + R_{12}}{5}$$
-            3. **가중 평균 모멘텀 스코어** (전략 B 공격형): 레버리지 특성상 최근 수익률에 높은 가중치 부여
-            $$\\text{Weighted Momentum} = \\frac{12R_1 + 4R_3 + 2R_6 + R_{12}}{19}$$
+## 투자 유니버스와 데이터
 
-            #### 🔁 리밸런싱 프로세스
-            1. **카나리아 모니터링**: 매월 말 TIP 가격·모멘텀과 S&P 500 배당수익률을 통해 각 전략의 공격/방어 신호를 산출합니다.
-            2. **전략별 자산 확정**: 전략 A는 모멘텀 상위 4자산(공격) 또는 1자산(방어), 전략 B·C는 각각 상위 1자산을 선정합니다.
-            3. **동일비중 결합**: 세 전략의 산출 비중을 각 33.33%씩 환산·합산하여 매월 리밸런싱을 실행합니다.
+| 전략 | 공격 자산군 | 방어 자산군 |
+| --- | --- | --- |
+| A | QQQ, FEZ, GLD, IBB, SMH, EEM, XLK, LIT, XLE, UBT, XLV, QTUM (12개) | BIL, IEF, AGG, HYG, TBF (5개) |
+| B | TYD, UPRO, VNQ (3개) | DOG, RWM, TBF (3개) |
+| C | FDN, LIT, SMH, XLE, IGV, QQQM, XLU (7개) | GLD, PDBC, OILK, SHY, TLT (5개) |
 
-            #### 🛡️ MDD 개선 장치 (선택 적용)
-            2019년 5월 무역전쟁 급락 당시 -13.0%의 최대 낙폭(MDD)이 발생한 원인을 분석한 결과, 3개 전략이 독립적으로 신호를 계산하다 보니
-            SMH(41.66%)·UPRO(33.33%) 등 특정 자산·섹터에 비중이 중복 쏠리는 현상이 핵심 원인으로 확인되었습니다. 아래 2가지 개선 장치를 선택적으로 적용할 수 있습니다.
-            - ✅ **비중 상한 (적용 가능)**: 단일 자산군 비중 상한(Cap 25%) — 아래 백테스트 성과 분석 섹션의 체크박스로 지금 바로 켜고 끄며 비교할 수 있습니다.
-            - ✅ **월중 하드스탑 (적용 가능)**: 월중 하드스탑(Intra-month Stop-loss) — 월중 낙폭이 -7%에 도달하면 즉시 현금화, 체크박스로 On/Off 가능합니다.
+전략 간 겹치는 티커가 있습니다. SMH·LIT·XLE는 A공격과 C공격, GLD는 A공격과 C방어, TBF는 A방어와 B방어에 함께 들어 있습니다. 합산 비중이 한 종목에 쏠리는 원인이 바로 이 중복입니다.
 
-            > 실제 장기 성과(CAGR, MDD, 연도별/월별 수익률 등)는 아래 **🛑 2026 혼합전략 백테스트 성과 분석** 섹션에서 야후 파이낸스 실시간 데이터를 기반으로 항상 최신 상태로 자동 계산됩니다.
-            """)
+- **출처**: yfinance(야후 파이낸스) 일별 종가, `auto_adjust=True`(배당·분할 반영 수정주가). 캐시 유효시간 1시간.
+- **월간 변환**: 일별 종가를 월말 마지막 값으로 리샘플링합니다.
+- **배당 데이터**: SPY 배당 이력을 전략 C 카나리아에 씁니다.
+- **시작일**: 2015-01-01(기본), 2018-01-01, 2020-01-01 중 선택. 첫 12개월은 모멘텀 계산용 워밍업이라 성과 기록에서 빠집니다.
+
+## 전략 A: 대형 우량 자산 안정형
+
+매월 말 TIP 종가가 최근 11개월(당월 포함) 종가 평균보다 높으면 공격, 같거나 낮으면 방어입니다.
+
+**모멘텀 정의**: R_n = (당월 말 종가 ÷ n개월 전 월말 종가 − 1) × 100. 모든 전략이 이 정의를 씁니다.
+
+1. **공격 스코어**: 공격 자산 12개에 4구간 평균을 적용합니다. R_1과 R_12가 모두 있어야 후보가 됩니다.
+2. **공격 배분**: 점수 상위 4종목에 각 25%. 후보가 없으면 현금 100%.
+3. **방어 스코어**: 방어 자산 5개에 9개월 구간을 더한 5구간 평균을 씁니다.
+4. **방어 배분**: 점수 1위 자산에 100%. 단, 1위 점수가 0 이하면 현금 100%.
+""")
+            st.latex(r"Score_{A,\text{공격}} = \frac{R_1 + R_3 + R_6 + R_{12}}{4} \qquad Score_{A,\text{방어}} = \frac{R_1 + R_3 + R_6 + R_9 + R_{12}}{5}")
+            st.markdown(r"""
+## 전략 B: 레버리지 공격형
+
+TIP의 5구간 평균 모멘텀이 0보다 크면 공격, 0 이하면 방어입니다. 어느 쪽이든 1종목에 100% 집중합니다. TIP 모멘텀 5개 중 하나라도 계산되지 않는 달은 기록에서 빠집니다.
+
+1. **공격 스코어**: TYD·UPRO·VNQ에 최근 수익률 비중이 큰 가중 모멘텀을 적용합니다. R_12가 있어야 후보가 됩니다.
+2. **공격 배분**: 점수 1위에 100%. 후보가 없으면 현금 100%.
+3. **방어 선정**: DOG·RWM·TBF 중 최근 5개월 수익률(R_5)이 가장 높은 자산을 고릅니다.
+4. **방어 필터**: 선정 자산의 5구간 평균 모멘텀이 0보다 크면 100% 투자, 아니면 현금 100%.
+
+방어 시 순위(R_5)와 진입 필터(5구간 평균)가 서로 다른 지표라는 점이 A·C와 다릅니다.
+""")
+            st.latex(r"Canary_B = \frac{R_1 + R_3 + R_6 + R_9 + R_{12}}{5}\,(TIP) > 0 \qquad Score_{B,\text{공격}} = \frac{12R_1 + 4R_3 + 2R_6 + R_{12}}{19}")
+            st.markdown(r"""
+## 전략 C: 배당 기반 섹터 로테이션
+
+SPY의 최근 365일 배당 합계를 월말 SPY 종가로 나눈 배당수익률이 1.33%를 넘으면 공격, 이하면 방어입니다. 배당 합계가 0이거나 가격이 없는 달은 기록에서 빠집니다.
+
+1. **공격 스코어**: 섹터 ETF 7개에 전략 A와 같은 4구간 평균을 적용합니다. R_12가 있어야 후보가 됩니다.
+2. **공격 배분**: 점수 1위 섹터에 100%. 후보가 없으면 현금 100%.
+3. **방어 스코어**: 원자재·채권 5개에 5구간 평균(R_1·R_3·R_6·R_9·R_12)을 적용합니다.
+4. **방어 배분**: 점수 1위에 100%. 1위 점수가 0 이하면 현금 100%.
+
+실시간 화면의 배당수익률은 `get_sp500_dividend_yield()`가 최근 배당 이력과 현재가로 따로 계산하며, 백테스트와 같은 1.33% 기준을 씁니다.
+""")
+            st.latex(r"DY = \frac{\sum Div_{SPY}(\text{최근 365일})}{P_{SPY}(\text{월말})} \times 100 > 1.33\%")
+            st.markdown(r"""
+## 혼합전략 결합과 월간 흐름
+
+세 전략은 서로 독립적으로 신호를 내고, 혼합전략은 각 전략 비중에 1/3을 곱해 티커별로 더합니다. 예를 들어 A가 QQQ·SMH·XLK·GLD에 25%씩, B가 UPRO 100%, C가 SMH 100%면 합산은 SMH 41.67%, UPRO 33.33%, QQQ·XLK·GLD 각 8.33%입니다.
+""")
+            st.graphviz_chart("""
+digraph G {
+    rankdir=TB; nodesep=0.35; ranksep=0.45;
+    node [shape=box, style="rounded", fontname="sans-serif", fontsize=11, color="#94a3b8"];
+    edge [color="#94a3b8", arrowsize=0.7];
+    A [label="전략 A · 안정형\\nTIP vs 11개월 평균\\n공격: 상위 4종목 × 25%\\n방어: 채권 1위 또는 현금"];
+    B [label="전략 B · 레버리지\\nTIP 5구간 모멘텀 양수 여부\\n공격: 가중 모멘텀 1위 100%\\n방어: 인버스 1위 또는 현금"];
+    C [label="전략 C · 섹터로테이션\\nSPY 배당수익률 1.33% 초과\\n공격: 모멘텀 1위 섹터 100%\\n방어: 원자재·채권 또는 현금"];
+    M [label="동일 비중 합산\\n전략별 비중 × 1/3을 티커별로 더함"];
+    CAP [label="비중 상한 (선택)\\n단일 티커 35% 초과분 → 현금", style="rounded,dashed"];
+    STOP [label="월중 하드스탑 (선택)\\n월초 대비 −7% 도달일에 청산\\n이후 월말까지 현금", style="rounded,dashed"];
+    R [label="다음 달 수익 확정\\n다음 월말 종가 기준 수익률\\nNAV·드로다운 기록 후 반복", style="rounded,filled", fillcolor="#dbeafe", color="#2563eb"];
+    {rank=same; A; B; C;}
+    {rank=same; CAP; STOP; R;}
+    A -> M; B -> M; C -> M;
+    M -> CAP; CAP -> STOP; STOP -> R;
+}
+""")
+            st.caption("점선 상자는 체크박스로 켜는 선택 장치이며 기본값은 꺼짐입니다. 꺼져 있으면 그대로 통과하고, 합산 비중이 그대로 다음 달 수익률에 적용됩니다.")
+            st.markdown(r"""
+## 리스크 관리 장치
+
+두 장치는 `run_backtest_strategy_mix_improved_full()`에 구현되어 있고, 하나라도 켜면 개선판 엔진으로 계산합니다. 도입 근거는 2019년 5월 무역전쟁 급락 때 SMH 41.66%, UPRO 33.33%로 비중이 겹치며 MDD -13.0%가 났던 사례입니다.
+
+| 항목 | 비중 상한 (Cap) | 월중 하드스탑 |
+| --- | --- | --- |
+| 기본값 | 35% | -7.0% |
+| 입력 범위 | 10 – 50%, 1%p 단위 | -20.0 – -1.0%, 0.5%p 단위 |
+| 기본 적용 여부 | 꺼짐 (체크박스) | 꺼짐 (체크박스) |
+| 판단 시점 | 월말 리밸런싱 시 | 다음 달 매 영업일 종가 |
+| 발동 조건 | 합산 후 단일 티커 비중 > 상한 | 월초 대비 누적 수익률 ≤ 임계치 |
+| 처리 | 초과분을 현금으로 전환 (재배분 없음) | 첫 도달일 수익률로 그달 확정, 이후 월말까지 현금 |
+| 모드 표시 | 📐Cap적용 | 🛑월중손절(발동일 MM/DD) |
+
+**비중 상한이 실제로 걸리는 경우**: 한 전략이 100%를 넣어도 합산 비중은 33.33%라 35% 상한에 걸리지 않습니다. 두 전략 이상이 같은 티커를 고를 때만 발동합니다. 예를 들어 A가 SMH 25%, C가 SMH 100%를 고르면 합산 41.67%이고, 초과분 6.67%p가 현금이 됩니다.
+
+**하드스탑 계산 방식**: 전월 말 종가를 기준가로 삼아, 보유 종목별 일별 누적 수익률에 비중을 곱해 더합니다. 월중 리밸런싱이 없는 매수 후 보유 경로입니다. 하드스탑만 켜고 발동하지 않은 달도 일별 경로의 월말 값으로 수익률을 다시 계산합니다.
+
+## 백테스트 방법론과 성과 지표
+
+월말 종가로 신호와 비중을 정하고, 같은 종가에 체결했다고 보고 다음 달 월간 수익률을 적용합니다. NAV는 100에서 시작하며, 수익은 실현되는 달(다음 월말)에 기록합니다.
+
+- **현금 수익률**: 0%로 가정합니다.
+- **거래비용·세금·슬리피지**: 반영하지 않습니다.
+- **혼합 결합**: 세 전략이 모두 기록을 가진 날짜만 씁니다(교집합).
+- **드로다운**: 월말 NAV의 직전 고점 대비 하락률입니다. 월중 낙폭은 잡히지 않습니다.
+
+| 지표 | 계산 방식 |
+| --- | --- |
+| 기간 수익률 | 최종 NAV ÷ 100 − 1 |
+| 연환산 수익률 (CAGR) | (최종 NAV ÷ 100)^(1 ÷ 연수) − 1, 연수 = 일수 ÷ 365.25 |
+| 이번 달 수익률 | 마지막 달 월간 수익률 |
+| 올해 수익률 (YTD) | 마지막 기록 연도의 월간 수익률 복리 누적 |
+| 월 최고 / 월 최저 수익률 | 월간 수익률의 최댓값 / 최솟값 |
+| 수익 월 비중 | 수익률 > 0인 달 수 / 전체 달 수 |
+| 연 변동성 | 월간 수익률 표준편차 × √12 |
+| 최대 낙폭 (MDD) / MDD 시점 | 드로다운 최솟값과 그 달 |
+| 1년·3년·5년 수익률 | 최근 12·36·60개월 복리 누적. 데이터가 모자라면 "데이터 부족" |
+| 1년·3년·5년 표준편차 | 같은 구간 월간 표준편차 × √12 |
+| 샤프 지수 | (월평균 수익률 × 12) ÷ 연 변동성. 무위험수익률 0 |
+| 소티노 지수 | (월평균 수익률 × 12) ÷ (음수 월 수익률 표준편차 × √12) |
+| UPI 지수 | CAGR ÷ 궤양지수, 궤양지수 = √(드로다운² 평균) |
+| 연간 턴오버 | 월별 (Σ 비중 변화의 절댓값 ÷ 2)의 평균 × 12. QQQ는 0% |
+
+## 앱 화면 구성과 파라미터
+
+| 파라미터 | 기본값 | 선택 범위 | 위치 |
+| --- | --- | --- | --- |
+| 백테스트 시작일 | 2015-01-01 | 2015 / 2018 / 2020년 1월 1일 | 설정 패널 |
+| 비중 상한 | 35% | 10 – 50% | 설정 패널 |
+| 월중 하드스탑 | -7.0% | -20.0 – -1.0% | 설정 패널 |
+| 비중 상한 적용 | 꺼짐 | 체크박스 | 설정 패널 |
+| 월중 하드스탑 적용 | 꺼짐 | 체크박스 | 설정 패널 |
+
+실시간 비중 분배 현황에는 두 리스크 장치가 적용되지 않습니다. 장치는 백테스트 결과에만 반영됩니다.
+
+## 한계와 유의사항
+
+백테스트 수치는 비용이 없고 월말 종가에 바로 체결된다는 가정 위의 값이라, 실제 운용 성과보다 높게 나올 수 있습니다.
+
+- **비용 미반영**: 전략 B·C는 매달 100% 교체될 수 있어 턴오버가 큽니다. 거래비용과 세금을 빼면 수익률이 낮아집니다.
+- **동일 종가 체결**: 신호를 계산한 종가에 체결한다고 봅니다. 실제로는 다음 날 시가 등에 체결되므로 차이가 생깁니다.
+- **배당수익률 편향 가능성**: 전략 C 백테스트는 배당을 반영해 낮아진 수정주가로 나눕니다. 과거 배당수익률이 실제보다 높게 계산돼 공격 신호가 더 자주 나올 수 있습니다.
+- **현금 수익률 0%**: 현금 비중이 큰 방어 구간과 상한 초과분의 이자 수익이 빠져 있습니다.
+- **실시간 비중과 백테스트 차이**: 실시간 비중 분배에는 비중 상한이 적용되지 않습니다. 상한을 운용 규칙으로 쓰려면 매매 시 따로 확인해야 합니다.
+- **하드스탑 가정**: 임계치에 닿은 날 종가에 전량 매도된다고 봅니다. 장중 급락이나 갭하락은 반영하지 못합니다.
+- **짧은 이력 자산**: QTUM, QQQM, OILK 등은 상장 기간이 짧습니다. 데이터가 없는 달에는 후보에서 빠지므로 초기 구간의 선택 폭이 좁습니다.
+- **데이터 의존성**: yfinance 응답이 바뀌거나 비면 결과가 달라지거나 표시되지 않을 수 있습니다.
+
+이 명세서는 코드 동작을 정리한 문서이며 투자 권유가 아닙니다.
+""")
 
         st.markdown("### 🚦 실시간 카나리아 신호 요약")
         c_sig1, c_sig2, c_sig3 = st.columns(3)
@@ -1469,6 +1871,9 @@ else:
             
             st.dataframe(pd.DataFrame(calc_data), use_container_width=True, hide_index=True)
 
+        st.markdown("---")
+        render_intramonth_stop_monitor(hist_prices, spy_divs_hist)
+
         if hist_prices and "SPY" in hist_prices:
             st.markdown("---")
             st.markdown("### 📅 월말 기준 리밸런싱 포트폴리오 역사 (최근 1년)")
@@ -1536,7 +1941,7 @@ else:
             bt_start_mix = bt_start_label_mix.split(" ")[0]
             st.markdown("**🛡️ MDD 개선 로직 (단계별 적용 — 개별 On/Off 가능)**")
             _mc1, _mc2 = st.columns(2)
-            mix_cap = _mc1.number_input("비중 상한 (%)", min_value=10.0, max_value=50.0, value=25.0, step=1.0, key="mix_cap_pct")
+            mix_cap = _mc1.number_input("비중 상한 (%)", min_value=10.0, max_value=50.0, value=35.0, step=1.0, key="mix_cap_pct")
             mix_stop = _mc2.number_input("월중 하드스탑 (%)", min_value=-20.0, max_value=-1.0, value=-7.0, step=0.5, key="mix_stop_pct")
             apply_cap_mix = st.checkbox(
                 f"비중 상한: 단일 자산군 비중 상한(Cap {mix_cap:.0f}%) 적용",
@@ -1940,7 +2345,7 @@ else:
                 ("연간 턴오버", f"{annual_turnover_mix:.1f}%", "0.0%"),
             ]
             df_metrics_mix = pd.DataFrame(metrics_rows_mix, columns=["지표", "2026 혼합전략", "QQQ"])
-            st.dataframe(df_metrics_mix, use_container_width=True, hide_index=True)
+            st.dataframe(df_metrics_mix, use_container_width=True, hide_index=True, height=(len(df_metrics_mix) + 1) * 35 + 3)
             st.caption(f"※ 기간: {bt_results_mix['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_mix['date'].iloc[-1].strftime('%Y-%m')} 야후 파이낸스 실시간 데이터 기준. 1/3/5년 지표는 해당 기간의 월 데이터가 충분할 때만 표시됩니다.")
 
 
@@ -1965,7 +2370,7 @@ else:
             def _run_mix(cap=None, stop=None):
                 return run_backtest_strategy_mix_improved_full(
                     monthly_px_mix, spy_divs_mix, daily_px=(daily_px_mix if stop is not None else None),
-                    apply_cap=cap is not None, weight_cap=cap if cap is not None else 25.0,
+                    apply_cap=cap is not None, weight_cap=cap if cap is not None else 35.0,
                     apply_stop_loss=stop is not None, stop_loss_pct=stop if stop is not None else -7.0,
                 )
 
@@ -2068,6 +2473,9 @@ else:
                     p = data_dict.get(t, {}).get("현재가", 0.0)
                     s = data_dict.get(t, {}).get("A_방어스코어", 0.0)
                     st.info(f"**{t}** : 비중 **100%** (현재가: ${p:.2f}, 모멘텀: {s:.2f}%)")
+
+        st.markdown("---")
+        render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="A")
 
         st.markdown("---")
         st.markdown("### 🛑 전략 A 백테스트 성과 분석")
@@ -2433,7 +2841,7 @@ else:
                 ("연간 턴오버", f"{annual_turnover_a:.1f}%", "0.0%"),
             ]
             df_metrics_a = pd.DataFrame(metrics_rows_a, columns=["지표", "전략A", "QQQ"])
-            st.dataframe(df_metrics_a, use_container_width=True, hide_index=True)
+            st.dataframe(df_metrics_a, use_container_width=True, hide_index=True, height=(len(df_metrics_a) + 1) * 35 + 3)
             st.caption(f"※ 기간: {bt_results_a['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_a['date'].iloc[-1].strftime('%Y-%m')} 야후 파이낸스 실시간 데이터 기준. 1/3/5년 지표는 해당 기간의 월 데이터가 충분할 때만 표시됩니다.")
 
 
@@ -2529,6 +2937,9 @@ else:
                     p = data_dict.get(t, {}).get("현재가", 0.0)
                     s = data_dict.get(t, {}).get("B_단순모멘텀", 0.0)
                     st.info(f"🏆 **{t}** : 비중 **100%** (현재가: ${p:.2f}, 자체 모멘텀: {s:.2f}%)")
+
+        st.markdown("---")
+        render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="B")
 
         st.markdown("---")
         st.markdown("### 🛑 전략 B 백테스트 성과 분석")
@@ -2894,7 +3305,7 @@ else:
                 ("연간 턴오버", f"{annual_turnover_b:.1f}%", "0.0%"),
             ]
             df_metrics_b = pd.DataFrame(metrics_rows_b, columns=["지표", "전략B", "QQQ"])
-            st.dataframe(df_metrics_b, use_container_width=True, hide_index=True)
+            st.dataframe(df_metrics_b, use_container_width=True, hide_index=True, height=(len(df_metrics_b) + 1) * 35 + 3)
             st.caption(f"※ 기간: {bt_results_b['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_b['date'].iloc[-1].strftime('%Y-%m')} 야후 파이낸스 실시간 데이터 기준. 1/3/5년 지표는 해당 기간의 월 데이터가 충분할 때만 표시됩니다.")
 
 
@@ -2996,6 +3407,9 @@ else:
                     p = data_dict.get(t, {}).get("현재가", 0.0)
                     s = data_dict.get(t, {}).get("A_방어스코어", 0.0)
                     st.info(f"🏆 **{t}** : 비중 **100%** (현재가: ${p:.2f}, 모멘텀: {s:.2f}%)")
+
+        st.markdown("---")
+        render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="C")
 
         st.markdown("---")
         st.markdown("### 🛑 전략 C 백테스트 성과 분석")
@@ -3362,7 +3776,7 @@ else:
                 ("연간 턴오버", f"{annual_turnover_c:.1f}%", "0.0%"),
             ]
             df_metrics_c = pd.DataFrame(metrics_rows_c, columns=["지표", "전략C", "QQQ"])
-            st.dataframe(df_metrics_c, use_container_width=True, hide_index=True)
+            st.dataframe(df_metrics_c, use_container_width=True, hide_index=True, height=(len(df_metrics_c) + 1) * 35 + 3)
             st.caption(f"※ 기간: {bt_results_c['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_c['date'].iloc[-1].strftime('%Y-%m')} 야후 파이낸스 실시간 데이터 기준. 1/3/5년 지표는 해당 기간의 월 데이터가 충분할 때만 표시됩니다.")
 
 
