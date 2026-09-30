@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -455,7 +456,14 @@ def run_backtest_strategy_mix_full(monthly_px, spy_divs):
         mode_b_short = bt_b.loc[d, "mode"].split(" ")[0]
         mode_c_short = bt_c.loc[d, "mode"].split(" ")[0]
         mode_str = f"A:{mode_a_short} / B:{mode_b_short} / C:{mode_c_short}"
-        weights_str = f"A[{bt_a.loc[d, 'weights_str']}] + B[{bt_b.loc[d, 'weights_str']}] + C[{bt_c.loc[d, 'weights_str']}]"
+        def _fmt_third(alloc_dict):
+            # 각 전략은 전체 자산의 1/3 → 전략 내 100% = 전체 33.3%
+            return ", ".join([f"{t} {w / 3.0:.1f}%" for t, w in alloc_dict.items() if w > 0.01])
+        weights_str = (
+            f"A[{_fmt_third(bt_a.loc[d, 'alloc'])}] + "
+            f"B[{_fmt_third(bt_b.loc[d, 'alloc'])}] + "
+            f"C[{_fmt_third(bt_c.loc[d, 'alloc'])}]"
+        )
 
         # 세 전략(각 33.33%)의 종목별 비중을 하나로 합산 (턴오버 계산용)
         combined_alloc = {}
@@ -536,6 +544,8 @@ def run_backtest_strategy_mix_improved_full(
 
         # --- 1단계 개선 로직: 단일 자산군 비중 상한(Cap) ---
         cap_note = ""
+        combined_pre_cap = dict(combined_alloc)
+        excess_cash = 0.0
         if apply_cap:
             capped_alloc = {}
             excess_cash = 0.0
@@ -596,7 +606,19 @@ def run_backtest_strategy_mix_improved_full(
         mode_b_short = bt_b.loc[d, "mode"].split(" ")[0]
         mode_c_short = bt_c.loc[d, "mode"].split(" ")[0]
         mode_str = f"A:{mode_a_short} / B:{mode_b_short} / C:{mode_c_short}{cap_note}{stop_note}"
-        weights_str = ", ".join([f"{t} {w:.1f}%" for t, w in final_alloc.items() if w > 0.01])
+        def _fmt_part(src_alloc):
+            # 각 전략은 전체 자산의 1/3 (상한 적용 시 해당 티커 비중만큼 비례 축소)
+            items = []
+            for t, w in src_alloc.items():
+                base = w / 3.0
+                if apply_cap and t != "CASH (현금)" and combined_pre_cap.get(t, 0.0) > 0:
+                    base *= final_alloc.get(t, 0.0) / combined_pre_cap[t]
+                if base > 0.01:
+                    items.append(f"{t} {base:.1f}%")
+            return ", ".join(items)
+        weights_str = f"A[{_fmt_part(alloc_a)}] + B[{_fmt_part(alloc_b)}] + C[{_fmt_part(alloc_c)}]"
+        if apply_cap and excess_cash > 0.01:
+            weights_str += f" + 상한초과분[CASH (현금) {excess_cash:.1f}%]"
 
         records.append({
             "date": d,
@@ -1060,6 +1082,53 @@ else:
         "🧮 자산 계산기"
     ])
 
+
+    # 스크롤해도 전략 탭 메뉴(혼합전략/A/B/C/ETF 랭킹/자산 계산기)가 화면 상단에 고정되도록 함
+    components.html("""
+<script>
+(function () {
+  var win = window.parent, doc = win.document;
+  if (win.__tabStickyTimer) { win.clearInterval(win.__tabStickyTimer); }
+  var PROPS = ['position', 'top', 'left', 'width', 'z-index', 'box-shadow', 'box-sizing', 'background-color', 'padding-top', 'padding-bottom'];
+  function headerH() {
+    var h = doc.querySelector('[data-testid="stHeader"]');
+    return h ? h.getBoundingClientRect().height : 0;
+  }
+  function update() {
+    var tl = doc.querySelector('.stTabs [role="tablist"]') || doc.querySelector('[role="tablist"]') || doc.querySelector('[data-baseweb="tab-list"]');
+    if (!tl || !tl.parentNode) { return; }
+    var ph = doc.getElementById('tab-sticky-ph');
+    if (!ph || !ph.isConnected || ph.nextSibling !== tl) {
+      if (ph) { ph.remove(); }
+      ph = doc.createElement('div');
+      ph.id = 'tab-sticky-ph';
+      tl.parentNode.insertBefore(ph, tl);
+    }
+    var top = headerH();
+    var r = ph.getBoundingClientRect();
+    if (r.top <= top) {
+      ph.style.height = (tl.offsetHeight + 20) + 'px';
+      tl.style.setProperty('position', 'fixed', 'important');
+      tl.style.setProperty('top', top + 'px', 'important');
+      tl.style.setProperty('left', r.left + 'px', 'important');
+      tl.style.setProperty('width', r.width + 'px', 'important');
+      tl.style.setProperty('box-sizing', 'border-box', 'important');
+      tl.style.setProperty('background-color', '#f8fafc', 'important');
+      tl.style.setProperty('padding-top', '6px', 'important');
+      tl.style.setProperty('padding-bottom', '2px', 'important');
+      tl.style.setProperty('z-index', '999', 'important');
+      tl.style.setProperty('box-shadow', '0 6px 14px -4px rgba(15,23,42,0.35)', 'important');
+    } else {
+      ph.style.height = '0px';
+      PROPS.forEach(function (p) { tl.style.removeProperty(p); });
+    }
+  }
+  win.__tabStickyTimer = win.setInterval(update, 100);
+  update();
+})();
+</script>
+""", height=0)
+
     with tab_2026:
         c_2026 = st.container()
     with tab_a:
@@ -1172,6 +1241,72 @@ else:
             })
     df_mix = pd.DataFrame(mix_data).sort_values(by="배분 비중 (%)", ascending=False)
 
+    # [선택 근거 상세] 각 전략이 어떤 기준·값으로 자산을 골랐는지 정리 (표시 전용, 배분 계산에는 영향 없음)
+    basis_notes = {}
+
+    def _note(ticker, text):
+        basis_notes.setdefault(ticker, []).append(text)
+
+    def _top_rows(tickers, col, n=1):
+        return df_all[df_all["Ticker"].isin(tickers)].sort_values(by=col, ascending=False).head(n)
+
+    # 전략 A
+    if is_attack_a:
+        for _rank, (_, _r) in enumerate(_top_rows(OFFENSIVE_A, "A_공격스코어", 4).iterrows(), start=1):
+            _note(_r["Ticker"], f"A·공격: 공격스코어 {_rank}위 ({_r['A_공격스코어']:+.2f}%)")
+    else:
+        _d = _top_rows(DEFENSIVE_A, "A_방어스코어", 1)
+        if not _d.empty:
+            _r = _d.iloc[0]
+            if _r["A_방어스코어"] > 0:
+                _note(_r["Ticker"], f"A·방어: 방어스코어 1위 ({_r['A_방어스코어']:+.2f}%)")
+            else:
+                _note("CASH (현금)", f"A·방어: 1위 {_r['Ticker']} 방어스코어 {_r['A_방어스코어']:+.2f}% ≤ 0 → 현금")
+    # 전략 B
+    if is_attack_b:
+        _d = _top_rows(OFFENSIVE_B, "B_공격스코어", 1)
+        if not _d.empty:
+            _r = _d.iloc[0]
+            _note(_r["Ticker"], f"B·공격: 가중모멘텀 1위 ({_r['B_공격스코어']:+.2f}%)")
+    else:
+        _d = _top_rows(DEFENSIVE_B, "5M", 1)
+        if not _d.empty:
+            _r = _d.iloc[0]
+            if _r["B_단순모멘텀"] > 0:
+                _note(_r["Ticker"], f"B·방어: 5개월 수익률 1위 ({_r['5M']:+.1f}%, 단순모멘텀 {_r['B_단순모멘텀']:+.2f}%)")
+            else:
+                _note("CASH (현금)", f"B·방어: 5개월 1위 {_r['Ticker']} 단순모멘텀 {_r['B_단순모멘텀']:+.2f}% ≤ 0 → 현금")
+    # 전략 C
+    if is_attack_c:
+        _d = _top_rows(OFFENSIVE_C, "A_공격스코어", 1)
+        if not _d.empty:
+            _r = _d.iloc[0]
+            _note(_r["Ticker"], f"C·공격: 공격스코어 1위 ({_r['A_공격스코어']:+.2f}%)")
+    else:
+        _d = _top_rows(DEFENSIVE_C, "A_방어스코어", 1)
+        if not _d.empty:
+            _r = _d.iloc[0]
+            if _r["A_방어스코어"] > 0:
+                _note(_r["Ticker"], f"C·방어: 방어스코어 1위 ({_r['A_방어스코어']:+.2f}%)")
+            else:
+                _note("CASH (현금)", f"C·방어: 1위 {_r['Ticker']} 방어스코어 {_r['A_방어스코어']:+.2f}% ≤ 0 → 현금")
+
+    def _ret_txt(ticker, col):
+        v = data_dict.get(ticker, {}).get(col)
+        return f"{v:+.1f}%" if v is not None and ticker != "CASH (현금)" else "-"
+
+    df_mix_view = pd.DataFrame({
+        "자산군": df_mix["자산군 (Ticker)"].values,
+        "현재가 ($)": df_mix["현재가 ($)"].values,
+        "배분 비중 (%)": df_mix["배분 비중 (%)"].values,
+        "참여 전략 (신호)": df_mix["선택 근거 (참여 전략)"].values,
+        "선택 기준 · 값": [" | ".join(basis_notes.get(t, ["-"])) for t in df_mix["자산군 (Ticker)"]],
+        "1M": [_ret_txt(t, "1M") for t in df_mix["자산군 (Ticker)"]],
+        "3M": [_ret_txt(t, "3M") for t in df_mix["자산군 (Ticker)"]],
+        "6M": [_ret_txt(t, "6M") for t in df_mix["자산군 (Ticker)"]],
+        "12M": [_ret_txt(t, "12M") for t in df_mix["자산군 (Ticker)"]],
+    })
+
     with c_2026:
         st.header("🏆 2026년 혼합 전략")
         st.markdown(
@@ -1238,8 +1373,8 @@ else:
         c_sig3.metric("전략C (배당수익률)", f"{realtime_dy:.2f}%", "공격" if is_attack_c else "방어", delta_color="inverse" if not is_attack_c else "normal")
 
         st.markdown("### 📊 포트폴리오 비중 분배 현황")
-        chart_col, table_col = st.columns([5, 5])
-        
+        chart_col = st.container()
+
         with chart_col:
             try:
                 import altair as alt
@@ -1280,8 +1415,14 @@ else:
                 st.info("시각화 뷰 로드 완료")
                 st.bar_chart(df_mix.set_index("자산군 (Ticker)")["배분 비중 (%)"])
         
-        with table_col:
-            st.dataframe(df_mix, use_container_width=True, hide_index=True)
+        st.dataframe(
+            df_mix_view, use_container_width=True, hide_index=True,
+            column_config={
+                "선택 기준 · 값": st.column_config.TextColumn("선택 기준 · 값", width="large"),
+                "참여 전략 (신호)": st.column_config.TextColumn("참여 전략 (신호)", width="medium"),
+            },
+        )
+        st.caption("※ 선택 기준·값: 각 전략이 해당 자산을 고른 이유와 스코어입니다. 1M·3M·6M·12M은 해당 자산의 기간별 수익률입니다. 배분 비중은 전체 자산 대비 %입니다.")
 
         st.markdown("### 💰 실시간 리밸런싱 목표 수량 계산기")
         st.markdown("현재 환율과 실시간 주가를 기반으로, 설정한 원화 예산에 필요한 **자산별 목표 환전 달러** 및 **실제 매수 주수**를 계산해 드립니다.")
@@ -1389,7 +1530,7 @@ else:
             bt_start_label_mix = st.selectbox(
                 "분석 및 백테스트 시작일",
                 ["2018-01-01 (코로나 및 금리인상기 포함)", "2015-01-01 (장기 검증)", "2020-01-01 (최근 트렌드)"],
-                index=0,
+                index=1,
                 key="bt_start_select_mix"
             )
             bt_start_mix = bt_start_label_mix.split(" ")[0]
@@ -1612,6 +1753,14 @@ else:
             ).properties(height=200)
             st.altair_chart(dd_chart_mix, use_container_width=True)
 
+            _ser_a_mix = run_backtest_strategy_a_full(monthly_px_mix).set_index("date")["monthly_return"]
+            _ser_b_mix = run_backtest_strategy_b_full(monthly_px_mix).set_index("date")["monthly_return"]
+            _ser_c_mix = run_backtest_strategy_c_full(monthly_px_mix, spy_divs_mix).set_index("date")["monthly_return"]
+
+            def _period_ret_mix(ser, a, b):
+                sub = ser[(ser.index >= a) & (ser.index <= b)]
+                return (np.prod(1 + sub.values / 100.0) - 1) * 100 if len(sub) else float("nan")
+
             st.markdown("##### 🚨 포트폴리오 드로우다운 Top 10")
             dd_vals_mix = bt_results_mix["drawdown"].values
             dd_dates_mix = bt_results_mix["date"].values
@@ -1633,6 +1782,8 @@ else:
                         "시작": pd.Timestamp(dd_dates_mix[start_i]).strftime("%Y/%m"),
                         "종료": pd.Timestamp(dd_dates_mix[min_idx]).strftime("%Y/%m"),
                         "드로우다운": min_val,
+                        "_s": pd.Timestamp(dd_dates_mix[start_i]),
+                        "_e": pd.Timestamp(dd_dates_mix[min_idx]),
                     })
                     i_ep = j_ep
                 else:
@@ -1643,9 +1794,13 @@ else:
             for idx, ep in enumerate(top10_mix):
                 ep["순위"] = idx + 1
                 ep["드로우다운"] = f"{ep['드로우다운']:.1f}%"
+                ep["A 전략"] = f"{_period_ret_mix(_ser_a_mix, ep['_s'], ep['_e']):+.1f}%"
+                ep["B 전략"] = f"{_period_ret_mix(_ser_b_mix, ep['_s'], ep['_e']):+.1f}%"
+                ep["C 전략"] = f"{_period_ret_mix(_ser_c_mix, ep['_s'], ep['_e']):+.1f}%"
             if top10_mix:
-                df_dd_top10_mix = pd.DataFrame(top10_mix)[["순위", "시작", "종료", "드로우다운"]]
+                df_dd_top10_mix = pd.DataFrame(top10_mix)[["순위", "시작", "종료", "드로우다운", "A 전략", "B 전략", "C 전략"]].rename(columns={"드로우다운": "합계(A+B+C) 드로우다운"})
                 st.dataframe(df_dd_top10_mix, use_container_width=True, hide_index=True)
+                st.caption("※ 합계(A+B+C)는 세 전략을 1/3씩 섞은 혼합 포트폴리오의 낙폭이고, A·B·C 열은 같은 기간(시작~종료월) 각 전략을 단독(100%)으로 운용했을 때의 수익률입니다.")
             else:
                 st.info("드로우다운 구간이 발견되지 않았습니다.")
 
@@ -1669,7 +1824,10 @@ else:
                     "스트레스 기간": label,
                     "시작": s_ts.strftime("%Y/%m"),
                     "종료": e_ts.strftime("%Y/%m"),
-                    "포트폴리오 수익률": f"{port_cum_mix:+.1f}%",
+                    "합계(A+B+C) 수익률": f"{port_cum_mix:+.1f}%",
+                    "A 전략": f"{_period_ret_mix(_ser_a_mix, s_ts, e_ts):+.1f}%",
+                    "B 전략": f"{_period_ret_mix(_ser_b_mix, s_ts, e_ts):+.1f}%",
+                    "C 전략": f"{_period_ret_mix(_ser_c_mix, s_ts, e_ts):+.1f}%",
                     "QQQ 수익률": f"{qqq_cum_mix:+.1f}%",
                 })
             if stress_rows_mix:
@@ -1787,6 +1945,19 @@ else:
 
 
 
+            st.markdown("##### 🗓️ 월별 세부 리밸런싱 기록")
+            display_bt_mix = bt_results_mix.copy()
+            display_bt_mix["연월"] = display_bt_mix["date"].dt.strftime("%Y-%m")
+            display_bt_mix["월 수익률"] = display_bt_mix["monthly_return"].apply(lambda x: f"{x:+.2f}%")
+            display_bt_mix["낙폭"] = display_bt_mix["drawdown"].apply(lambda x: f"{x:.2f}%")
+            display_bt_mix["NAV"] = display_bt_mix["nav"].apply(lambda x: f"{x:.1f}")
+            st.caption("※ 전략 A·B·C는 각각 전체 자산의 33.3%씩 배분되며, 괄호 안 비중은 전체 자산 대비 비중입니다. (예: A[TBF 33.3%] = 전략 A가 TBF에 100% 투자)")
+
+            st.dataframe(
+                display_bt_mix[["연월", "mode", "월 수익률", "weights_str", "NAV", "낙폭"]].iloc[::-1],
+                use_container_width=True, hide_index=True
+            )
+
             st.markdown("---")
             st.markdown("### 🔬 MDD 안전장치 전/후 비교 (비중 상한 · 월중 하드스탑)")
             st.caption(f"같은 기간·같은 전략에서 안전장치만 바꿔 비교합니다. 상한 {mix_cap:.0f}% · 하드스탑 {mix_stop:.1f}%는 위 설정값입니다.")
@@ -1815,18 +1986,6 @@ else:
                 st.caption("안전장치는 MDD·최악의 달을 줄이는 대신 평상시 CAGR·샤프를 깎습니다. '발동 (월)'은 실제로 개입한 횟수입니다.")
                 _nav_mix = pd.concat({_k.split(" ")[0]: _bt.set_index("date")["nav"] for _k, _bt in _mix_res.items() if len(_bt) > 0}, axis=1)
                 st.line_chart(_nav_mix)
-
-            st.markdown("##### 🗓️ 월별 세부 리밸런싱 기록")
-            display_bt_mix = bt_results_mix.copy()
-            display_bt_mix["연월"] = display_bt_mix["date"].dt.strftime("%Y-%m")
-            display_bt_mix["월 수익률"] = display_bt_mix["monthly_return"].apply(lambda x: f"{x:+.2f}%")
-            display_bt_mix["낙폭"] = display_bt_mix["drawdown"].apply(lambda x: f"{x:.2f}%")
-            display_bt_mix["NAV"] = display_bt_mix["nav"].apply(lambda x: f"{x:.1f}")
-
-            st.dataframe(
-                display_bt_mix[["연월", "mode", "월 수익률", "weights_str", "NAV", "낙폭"]].iloc[::-1],
-                use_container_width=True, hide_index=True
-            )
 
     with c_a:
         st.header("🛡️ 전략 A (안정형)")
@@ -1919,7 +2078,7 @@ else:
             bt_start_label_a = st.selectbox(
                 "분석 및 백테스트 시작일",
                 ["2018-01-01 (코로나 및 금리인상기 포함)", "2015-01-01 (장기 검증)", "2020-01-01 (최근 트렌드)"],
-                index=0,
+                index=1,
                 key="bt_start_select_a"
             )
             bt_start_a = bt_start_label_a.split(" ")[0]
@@ -2380,7 +2539,7 @@ else:
             bt_start_label_b = st.selectbox(
                 "분석 및 백테스트 시작일",
                 ["2018-01-01 (코로나 및 금리인상기 포함)", "2015-01-01 (장기 검증)", "2020-01-01 (최근 트렌드)"],
-                index=0,
+                index=1,
                 key="bt_start_select_b"
             )
             bt_start_b = bt_start_label_b.split(" ")[0]
@@ -2847,7 +3006,7 @@ else:
             bt_start_label_c = st.selectbox(
                 "분석 및 백테스트 시작일",
                 ["2018-01-01 (코로나 및 금리인상기 포함)", "2015-01-01 (장기 검증)", "2020-01-01 (최근 트렌드)"],
-                index=0,
+                index=1,
                 key="bt_start_select_c"
             )
             bt_start_c = bt_start_label_c.split(" ")[0]
