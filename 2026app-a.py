@@ -1413,6 +1413,45 @@ def render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="mix"):
         st.caption("※ 일별 종가 기준입니다. 장중에는 최근일 값이 실시간 가격으로 계속 바뀝니다. 월중 리밸런싱이 없는 매수 후 보유 가정이며, 슬리피지·거래비용·세금은 반영되지 않았습니다.")
 
 
+def render_drawdown_with_benchmark(chart_df, strategy_name):
+    """낙폭 히스토리: 전략(진한 빨강) 위에 벤치마크 QQQ(연한 회색)를 겹쳐 표시."""
+    import altair as alt
+    dd_df = pd.DataFrame({
+        "date_str": chart_df["date_str"].values,
+        strategy_name: chart_df["drawdown"].values,
+    })
+    if "qqq_nav" in chart_df.columns:
+        q_nav = pd.Series(chart_df["qqq_nav"].values, dtype=float)
+        dd_df["QQQ"] = ((q_nav / q_nav.cummax() - 1.0) * 100.0).values
+    long_df = dd_df.melt(id_vars="date_str", var_name="series", value_name="drawdown")
+    long_df["drawdown"] = long_df["drawdown"].round(2)
+
+    domain = [strategy_name, "QQQ"]
+    color_scale = alt.Scale(domain=domain, range=["#dc2626", "#9ca3af"])
+    x_enc = alt.X("date_str:N", sort=None, title="년-월")
+    y_enc = alt.Y("drawdown:Q", title="MDD (%)")
+    tip = [alt.Tooltip("date_str:N", title="년-월"), alt.Tooltip("series:N", title="구분"),
+           alt.Tooltip("drawdown:Q", title="낙폭 (%)", format=".2f")]
+    color_enc = alt.Color("series:N", scale=color_scale, sort=domain,
+                          legend=alt.Legend(orient="top", title=None))
+
+    # 뒤: QQQ 연한 회색 / 앞: 전략 진한 빨강 (면 + 테두리선)
+    qqq_layer = alt.Chart(long_df[long_df["series"] == "QQQ"]).mark_area(
+        opacity=0.35, line={"color": "#9ca3af", "strokeWidth": 1}
+    ).encode(x=x_enc, y=y_enc, color=color_enc, tooltip=tip)
+    strat_layer = alt.Chart(long_df[long_df["series"] == strategy_name]).mark_area(
+        opacity=0.6, line={"color": "#991b1b", "strokeWidth": 1.5}
+    ).encode(x=x_enc, y=y_enc, color=color_enc, tooltip=tip)
+
+    st.altair_chart((qqq_layer + strat_layer).properties(height=220), use_container_width=True)
+
+    if "QQQ" in dd_df.columns:
+        st.caption(
+            f"빨강 = {strategy_name} (MDD {dd_df[strategy_name].min():.2f}%), "
+            f"연회색 = 벤치마크 QQQ (MDD {dd_df['QQQ'].min():.2f}%)"
+        )
+
+
 with st.spinner("야후 파이낸스 실시간 데이터를 통합 집계 중..."):
     df_all = get_all_financial_data_v2(ALL_TICKERS)
 
@@ -2231,12 +2270,7 @@ digraph G {
             )
 
             st.markdown("##### 📉 낙폭 (Drawdown) 히스토리")
-            dd_chart_mix = alt.Chart(chart_df_mix).mark_area(color="#fecaca", opacity=0.8).encode(
-                x=alt.X("date_str:N", sort=None, title="년-월"),
-                y=alt.Y("drawdown:Q", title="MDD (%)"),
-                tooltip=["date_str", "drawdown"]
-            ).properties(height=200)
-            st.altair_chart(dd_chart_mix, use_container_width=True)
+            render_drawdown_with_benchmark(chart_df_mix, "2026 혼합전략")
 
             _ser_a_mix = run_backtest_strategy_a_full(monthly_px_mix).set_index("date")["monthly_return"]
             _ser_b_mix = run_backtest_strategy_b_full(monthly_px_mix).set_index("date")["monthly_return"]
@@ -2768,12 +2802,7 @@ digraph G {
             )
 
             st.markdown("##### 📉 낙폭 (Drawdown) 히스토리")
-            dd_chart_a = alt.Chart(chart_df_a).mark_area(color="#fecaca", opacity=0.8).encode(
-                x=alt.X("date_str:N", sort=None, title="년-월"),
-                y=alt.Y("drawdown:Q", title="MDD (%)"),
-                tooltip=["date_str", "drawdown"]
-            ).properties(height=200)
-            st.altair_chart(dd_chart_a, use_container_width=True)
+            render_drawdown_with_benchmark(chart_df_a, "전략A")
 
             st.markdown("##### 🚨 포트폴리오 드로우다운 Top 10")
             dd_vals_a = bt_results_a["drawdown"].values
@@ -3260,12 +3289,7 @@ digraph G {
             )
 
             st.markdown("##### 📉 낙폭 (Drawdown) 히스토리")
-            dd_chart_b = alt.Chart(chart_df_b).mark_area(color="#fecaca", opacity=0.8).encode(
-                x=alt.X("date_str:N", sort=None, title="년-월"),
-                y=alt.Y("drawdown:Q", title="MDD (%)"),
-                tooltip=["date_str", "drawdown"]
-            ).properties(height=200)
-            st.altair_chart(dd_chart_b, use_container_width=True)
+            render_drawdown_with_benchmark(chart_df_b, "전략B")
 
             st.markdown("##### 🚨 포트폴리오 드로우다운 Top 10")
             dd_vals_b = bt_results_b["drawdown"].values
@@ -3759,12 +3783,7 @@ digraph G {
             )
 
             st.markdown("##### 📉 낙폭 (Drawdown) 히스토리")
-            dd_chart_c = alt.Chart(chart_df_c).mark_area(color="#fecaca", opacity=0.8).encode(
-                x=alt.X("date_str:N", sort=None, title="년-월"),
-                y=alt.Y("drawdown:Q", title="MDD (%)"),
-                tooltip=["date_str", "drawdown"]
-            ).properties(height=200)
-            st.altair_chart(dd_chart_c, use_container_width=True)
+            render_drawdown_with_benchmark(chart_df_c, "전략C")
 
             st.markdown("##### 🚨 포트폴리오 드로우다운 Top 10")
             dd_vals_c = bt_results_c["drawdown"].values
@@ -4149,4 +4168,4 @@ digraph G {
         for col in ["누적 납입원금", "세전 일반복리", "세후 수령예정액", "세후 실질가치 (물가반영)"]:
             df_display[col] = df_display[col].apply(format_krw)
         
-        st.dataframe(df_display, use_container_width=True)
+        st.dataframe(df_display, use_container_width=True, height=(len(df_display) + 1) * 35 + 3)
