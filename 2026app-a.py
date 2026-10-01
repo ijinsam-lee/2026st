@@ -1413,17 +1413,127 @@ def render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="mix"):
         st.caption("※ 일별 종가 기준입니다. 장중에는 최근일 값이 실시간 가격으로 계속 바뀝니다. 월중 리밸런싱이 없는 매수 후 보유 가정이며, 슬리피지·거래비용·세금은 반영되지 않았습니다.")
 
 
-def qqq_period_return_str(qqq_ret_pct, start_ym, end_ym):
-    """드로우다운 구간(시작~종료월, "YYYY/MM")과 같은 달들의 QQQ 누적 수익률 문자열."""
-    try:
-        ser = pd.Series(qqq_ret_pct).dropna()
-        ym = pd.DatetimeIndex(ser.index).strftime("%Y/%m")
-        sub = ser[(ym >= start_ym) & (ym <= end_ym)]
-        if len(sub) == 0:
-            return "-"
-        return f"{(np.prod(1 + sub.values / 100.0) - 1) * 100:+.1f}%"
-    except Exception:
-        return "-"
+import html as _html
+
+# 티커 -> (짧은 한글명, 간략 설명). 표에서 티커 옆에 한글명을 보여주고, 마우스를 올리면 설명이 나옵니다.
+TICKER_INFO = {
+    "TIP": ("물가연동채", "iShares TIPS Bond · 원금이 물가상승률에 연동되는 미국 물가연동국채(TIPS)"),
+    "SPY": ("S&P500", "SPDR S&P 500 · 미국 대형주 500개 지수 추종"),
+    "QQQ": ("나스닥100", "Invesco QQQ · 나스닥 상위 100개 비금융 대형주(기술주 중심) 추종"),
+    "QQQM": ("나스닥100", "Invesco NASDAQ 100 · QQQ와 같은 지수를 추종하며 보수가 더 낮은 ETF"),
+    "FEZ": ("유로존50", "SPDR EURO STOXX 50 · 유로존 대형주 50개 추종"),
+    "GLD": ("금", "SPDR Gold Shares · 금 현물 가격 추종"),
+    "IBB": ("바이오", "iShares Biotechnology · 미국 바이오테크 기업 지수 추종"),
+    "SMH": ("반도체", "VanEck Semiconductor · 미국 반도체 대형주 추종"),
+    "EEM": ("신흥국", "iShares MSCI Emerging Markets · 신흥국 주식 시장 추종"),
+    "XLK": ("기술주", "Technology Select Sector SPDR · S&P500 내 정보기술 섹터"),
+    "LIT": ("리튬·배터리", "Global X Lithium & Battery Tech · 리튬 채굴·2차전지 관련 기업"),
+    "XLE": ("에너지", "Energy Select Sector SPDR · S&P500 내 에너지 섹터(석유·가스)"),
+    "UBT": ("장기국채 2배", "ProShares Ultra 20+ Year Treasury · 미국 20년 이상 장기국채 일간 2배 레버리지"),
+    "XLV": ("헬스케어", "Health Care Select Sector SPDR · S&P500 내 헬스케어 섹터"),
+    "QTUM": ("양자컴퓨팅", "Defiance Quantum ETF · 양자컴퓨팅·머신러닝 관련 기업"),
+    "BIL": ("초단기국채", "SPDR 1-3 Month T-Bill · 만기 1~3개월 미국 단기국채, 현금에 가까운 자산"),
+    "IEF": ("중기국채", "iShares 7-10 Year Treasury · 만기 7~10년 미국 중기국채"),
+    "AGG": ("종합채권", "iShares Core US Aggregate Bond · 미국 국채·회사채·MBS 등 종합 채권"),
+    "HYG": ("하이일드채", "iShares iBoxx High Yield Corporate Bond · 신용등급이 낮은 고수익 회사채"),
+    "TBF": ("장기국채 인버스", "ProShares Short 20+ Year Treasury · 20년 이상 장기국채와 반대로 움직이는 -1배 인버스. 금리 상승 시 이익"),
+    "TYD": ("중기국채 3배", "Direxion 7-10 Year Treasury Bull 3X · 만기 7~10년 미국 국채 일간 3배 레버리지"),
+    "UPRO": ("S&P500 3배", "ProShares UltraPro S&P500 · S&P500 일간 3배 레버리지"),
+    "VNQ": ("미국 리츠", "Vanguard Real Estate · 미국 상장 부동산투자회사(리츠)"),
+    "DOG": ("다우 인버스", "ProShares Short Dow30 · 다우존스30 지수와 반대로 움직이는 -1배 인버스"),
+    "RWM": ("러셀2000 인버스", "ProShares Short Russell2000 · 미국 소형주(러셀2000)와 반대로 움직이는 -1배 인버스"),
+    "FDN": ("인터넷", "First Trust Dow Jones Internet · 미국 인터넷 기업"),
+    "IGV": ("소프트웨어", "iShares Expanded Tech-Software · 미국 소프트웨어 기업"),
+    "XLU": ("유틸리티", "Utilities Select Sector SPDR · S&P500 내 전력·가스 등 유틸리티 섹터"),
+    "PDBC": ("원자재", "Invesco Optimum Yield Diversified Commodity · 에너지·금속·농산물 등 다변화 원자재 선물"),
+    "OILK": ("원유", "ProShares K-1 Free Crude Oil Strategy · 원유 선물 추종(K-1 세무서류 없음)"),
+    "SHY": ("단기국채", "iShares 1-3 Year Treasury · 만기 1~3년 미국 단기국채"),
+    "TLT": ("장기국채", "iShares 20+ Year Treasury · 만기 20년 이상 미국 장기국채"),
+    "SCHD": ("배당성장", "Schwab US Dividend Equity · 배당 지속성이 높은 미국 배당성장주"),
+    "JEPI": ("커버드콜", "JPMorgan Equity Premium Income · S&P500 주식 + 옵션 매도로 월 배당을 높인 ETF"),
+    "TQQQ": ("나스닥100 3배", "ProShares UltraPro QQQ · 나스닥100 일간 3배 레버리지"),
+    "SOXL": ("반도체 3배", "Direxion Semiconductor Bull 3X · 반도체 지수 일간 3배 레버리지"),
+    "DIA": ("다우30", "SPDR Dow Jones Industrial Average · 다우존스 산업평균 30개 종목 추종"),
+    "IWM": ("러셀2000", "iShares Russell 2000 · 미국 소형주 2000개 추종"),
+    "XLF": ("금융", "Financial Select Sector SPDR · S&P500 내 금융 섹터"),
+}
+
+
+def ticker_cell_html(t, show_name=True):
+    """티커 + (한글명) + 마우스 오버 설명(title)."""
+    info = TICKER_INFO.get(str(t))
+    if not info:
+        return _html.escape(str(t))
+    short, desc = info
+    tip = _html.escape(f"{t} · {short}\n{desc}", quote=True).replace("\n", "&#10;")
+    name = f'<span class="tk-name">({_html.escape(short)})</span>' if show_name else ""
+    return f'<span class="tk" title="{tip}">{_html.escape(str(t))}</span>{name}'
+
+
+_TBL_CSS = (
+    "<style>"
+    ".dtbl{width:100%;border-collapse:collapse;font-size:0.85rem;margin:0.3rem 0 0.6rem}"
+    ".dtbl th{background:#e2e8f0;color:#334155;padding:7px 5px;text-align:center;border:1px solid #cbd5e1;word-break:keep-all}"
+    ".dtbl td{padding:6px 5px;text-align:right;border:1px solid #e2e8f0;white-space:nowrap}"
+    ".dtbl td.l{text-align:left}"
+    ".dtbl td.t{text-align:left;white-space:normal;word-break:keep-all;overflow-wrap:anywhere}"
+    ".dtbl tr:nth-child(even) td{background:#f8fafc}"
+    ".dtbl td.neg{color:#dc2626}"
+    ".dtbl .tk{border-bottom:1px dotted #64748b;cursor:help;font-weight:600}"
+    ".dtbl .tk-name{color:#64748b;font-size:0.82em;margin-left:2px;white-space:normal;word-break:keep-all}"
+    "@media (max-width:640px){.dtbl{font-size:0.62rem}.dtbl th,.dtbl td{padding:4px 2px}}"
+    "</style>"
+)
+
+
+def render_html_table(df, ticker_cols=(), text_cols=()):
+    """DataFrame을 스크롤 없이 전체가 보이는 HTML 표로 표시. 티커 열은 한글명+마우스 오버 설명을 붙입니다."""
+    head = "".join(f"<th>{_html.escape(str(c))}</th>" for c in df.columns)
+    body = ""
+    for _, row in df.iterrows():
+        cells = ""
+        for c in df.columns:
+            v = row[c]
+            if c in ticker_cols:
+                cells += f'<td class="l">{ticker_cell_html(v)}</td>'
+            elif c in text_cols:
+                cells += f'<td class="t">{_html.escape(str(v))}</td>'
+            elif isinstance(v, float):
+                d = 2 if any(k in str(c) for k in ("스코어", "모멘텀", "현재가", "비중")) else 1
+                cells += f'<td class="{"neg" if v < 0 else ""}">{v:,.{d}f}</td>'
+            else:
+                sv = str(v)
+                neg = sv.startswith("-") and len(sv) > 1 and sv[1].isdigit()
+                cells += f'<td class="{"neg" if neg else ""}">{_html.escape(sv)}</td>'
+        body += f"<tr>{cells}</tr>"
+    st.markdown(f'{_TBL_CSS}<table class="dtbl"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>', unsafe_allow_html=True)
+
+
+def render_alloc_table(df):
+    """비중 분배 현황: 자산마다 2줄(수치 줄 + 참여 전략·선택 기준 줄)로 폰에서도 한눈에 보이는 표."""
+    num_cols = ["자산군", "현재가 ($)", "배분 비중 (%)", "1M", "3M", "6M", "12M"]
+    head = "".join(f"<th>{_html.escape(c)}</th>" for c in num_cols)
+    body = ""
+    for _, r in df.iterrows():
+        cells = f'<td class="l">{ticker_cell_html(r["자산군"])}</td>'
+        cells += f'<td>{_html.escape(str(r["현재가 ($)"]))}</td>'
+        cells += f'<td><b>{float(r["배분 비중 (%)"]):,.2f}</b></td>'
+        for c in ("1M", "3M", "6M", "12M"):
+            sv = str(r[c])
+            neg = sv.startswith("-") and len(sv) > 1 and sv[1].isdigit()
+            cells += f'<td class="{"neg" if neg else ""}">{_html.escape(sv)}</td>'
+        detail = (
+            f'<b>참여 전략</b> {_html.escape(str(r["참여 전략 (신호)"]))}<br>'
+            f'<b>선택 기준·값</b> {_html.escape(str(r["선택 기준 · 값"]))}'
+        )
+        body += f'<tr class="main">{cells}</tr><tr class="detail"><td colspan="{len(num_cols)}" class="t">{detail}</td></tr>'
+    st.markdown(
+        _TBL_CSS
+        + "<style>.dtbl tr.detail td{background:#f1f5f9;color:#334155;font-size:0.92em;line-height:1.45}"
+        + ".dtbl tr.main td{border-bottom:none}.dtbl tr.detail td{border-top:none}</style>"
+        + f'<table class="dtbl"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>',
+        unsafe_allow_html=True,
+    )
 
 
 def render_drawdown_with_benchmark(chart_df, strategy_name):
@@ -2092,14 +2202,8 @@ digraph G {
                 st.info("시각화 뷰 로드 완료")
                 st.bar_chart(df_mix.set_index("자산군 (Ticker)")["배분 비중 (%)"])
         
-        st.dataframe(
-            df_mix_view, use_container_width=True, hide_index=True,
-            column_config={
-                "선택 기준 · 값": st.column_config.TextColumn("선택 기준 · 값", width="large"),
-                "참여 전략 (신호)": st.column_config.TextColumn("참여 전략 (신호)", width="medium"),
-            },
-        )
-        st.caption("※ 선택 기준·값: 각 전략이 해당 자산을 고른 이유와 스코어입니다. 1M·3M·6M·12M은 해당 자산의 기간별 수익률입니다. 배분 비중은 전체 자산 대비 %입니다.")
+        render_alloc_table(df_mix_view)
+        st.caption("※ 자산군에 마우스를 올리면 ETF 설명이 표시됩니다. 선택 기준·값: 각 전략이 해당 자산을 고른 이유와 스코어입니다. 1M·3M·6M·12M은 해당 자산의 기간별 수익률입니다. 배분 비중은 전체 자산 대비 %입니다.")
 
         st.markdown("### 💰 실시간 리밸런싱 목표 수량 계산기")
         st.markdown("현재 환율과 실시간 주가를 기반으로, 설정한 원화 예산에 필요한 **자산별 목표 환전 달러** 및 **실제 매수 주수**를 계산해 드립니다.")
@@ -2472,11 +2576,10 @@ digraph G {
                 ep["A 전략"] = f"{_period_ret_mix(_ser_a_mix, ep['_s'], ep['_e']):+.1f}%"
                 ep["B 전략"] = f"{_period_ret_mix(_ser_b_mix, ep['_s'], ep['_e']):+.1f}%"
                 ep["C 전략"] = f"{_period_ret_mix(_ser_c_mix, ep['_s'], ep['_e']):+.1f}%"
-                ep["QQQ (같은 기간)"] = qqq_period_return_str(qqq_monthly_ret_mix, ep["시작"], ep["종료"])
             if top10_mix:
-                df_dd_top10_mix = pd.DataFrame(top10_mix)[["순위", "시작", "종료", "드로우다운", "A 전략", "B 전략", "C 전략", "QQQ (같은 기간)"]].rename(columns={"드로우다운": "합계(A+B+C) 드로우다운"})
+                df_dd_top10_mix = pd.DataFrame(top10_mix)[["순위", "시작", "종료", "드로우다운", "A 전략", "B 전략", "C 전략"]].rename(columns={"드로우다운": "합계(A+B+C) 드로우다운"})
                 st.dataframe(df_dd_top10_mix, use_container_width=True, hide_index=True)
-                st.caption("※ 합계(A+B+C)는 세 전략을 1/3씩 섞은 혼합 포트폴리오의 낙폭이고, A·B·C 열은 같은 기간(시작~종료월) 각 전략을 단독(100%)으로 운용했을 때의 수익률입니다. QQQ는 벤치마크를 같은 기간 보유했을 때의 수익률입니다.")
+                st.caption("※ 합계(A+B+C)는 세 전략을 1/3씩 섞은 혼합 포트폴리오의 낙폭이고, A·B·C 열은 같은 기간(시작~종료월) 각 전략을 단독(100%)으로 운용했을 때의 수익률입니다.")
             else:
                 st.info("드로우다운 구간이 발견되지 않았습니다.")
 
@@ -2740,10 +2843,10 @@ digraph G {
             df_off_a = df_off_a.sort_values(by="A_공격스코어", ascending=False)
             
             st.write("**공격 자산 순위 (1-3-6-12M 단순 평균 모멘텀):**")
-            st.dataframe(
+            render_html_table(
                 df_off_a[["Ticker", "현재가", "1M", "3M", "6M", "12M", "A_공격스코어"]]
                 .rename(columns={"A_공격스코어": "모멘텀 스코어"}),
-                use_container_width=True, hide_index=True
+                ticker_cols=("Ticker",)
             )
             
             st.subheader("🎯 최종 포트폴리오 가이드 (각 25% 균등 분배)")
@@ -2757,10 +2860,10 @@ digraph G {
             df_def_a = df_def_a.sort_values(by="A_방어스코어", ascending=False)
             
             st.write("**방어 자산 순위 (1-3-6-9-12M 단순 평균 모멘텀):**")
-            st.dataframe(
+            render_html_table(
                 df_def_a[["Ticker", "현재가", "1M", "3M", "6M", "9M", "12M", "A_방어스코어"]]
                 .rename(columns={"A_방어스코어": "모멘텀 스코어"}),
-                use_container_width=True, hide_index=True
+                ticker_cols=("Ticker",)
             )
             
             st.subheader("🎯 최종 포트폴리오 가이드")
@@ -2995,11 +3098,10 @@ digraph G {
             for idx, ep in enumerate(top10_a):
                 ep["순위"] = idx + 1
                 ep["드로우다운"] = f"{ep['드로우다운']:.1f}%"
-                ep["QQQ (같은 기간)"] = qqq_period_return_str(qqq_monthly_ret_a, ep["시작"], ep["종료"])
             if top10_a:
-                df_dd_top10_a = pd.DataFrame(top10_a)[["순위", "시작", "종료", "드로우다운", "QQQ (같은 기간)"]]
+                df_dd_top10_a = pd.DataFrame(top10_a)[["순위", "시작", "종료", "드로우다운"]]
                 st.dataframe(df_dd_top10_a, use_container_width=True, hide_index=True)
-                st.caption("※ QQQ (같은 기간)는 벤치마크 QQQ를 같은 시작~종료월 동안 보유했을 때의 수익률입니다. 드로우다운은 시작월 직전 고점부터 종료월(최저점)까지의 하락률이므로 두 값을 바로 비교할 수 있습니다.")
+                st.caption("※ 드로우다운은 시작월 직전 고점부터 종료월(최저점)까지의 하락률입니다.")
             else:
                 st.info("드로우다운 구간이 발견되지 않았습니다.")
 
@@ -3229,10 +3331,10 @@ digraph G {
             
             st.write("**공격 자산 순위 (1-3-6-12M 가중 평균 모멘텀):**")
             st.caption("가중치 공식: $\\frac{12 \\cdot R_1 + 4 \\cdot R_3 + 2 \\cdot R_6 + R_{12}}{19}$")
-            st.dataframe(
+            render_html_table(
                 df_off_b[["Ticker", "현재가", "1M", "3M", "6M", "12M", "B_공격스코어"]]
                 .rename(columns={"B_공격스코어": "가중 모멘텀 스코어"}),
-                use_container_width=True, hide_index=True
+                ticker_cols=("Ticker",)
             )
             
             st.subheader("🎯 최종 포트폴리오 가이드 (100% 집중 투자)")
@@ -3246,10 +3348,10 @@ digraph G {
             df_def_b = df_def_b.sort_values(by="5M", ascending=False)
             
             st.write("**방어 자산 순위 (5개월 단순 수익률 기준):**")
-            st.dataframe(
+            render_html_table(
                 df_def_b[["Ticker", "현재가", "5M", "B_단순모멘텀"]]
                 .rename(columns={"5M": "5개월 수익률", "B_단순모멘텀": "자체 단순모멘텀"}),
-                use_container_width=True, hide_index=True
+                ticker_cols=("Ticker",)
             )
             
             st.subheader("🎯 최종 포트폴리오 가이드")
@@ -3484,11 +3586,10 @@ digraph G {
             for idx, ep in enumerate(top10_b):
                 ep["순위"] = idx + 1
                 ep["드로우다운"] = f"{ep['드로우다운']:.1f}%"
-                ep["QQQ (같은 기간)"] = qqq_period_return_str(qqq_monthly_ret_b, ep["시작"], ep["종료"])
             if top10_b:
-                df_dd_top10_b = pd.DataFrame(top10_b)[["순위", "시작", "종료", "드로우다운", "QQQ (같은 기간)"]]
+                df_dd_top10_b = pd.DataFrame(top10_b)[["순위", "시작", "종료", "드로우다운"]]
                 st.dataframe(df_dd_top10_b, use_container_width=True, hide_index=True)
-                st.caption("※ QQQ (같은 기간)는 벤치마크 QQQ를 같은 시작~종료월 동안 보유했을 때의 수익률입니다. 드로우다운은 시작월 직전 고점부터 종료월(최저점)까지의 하락률이므로 두 값을 바로 비교할 수 있습니다.")
+                st.caption("※ 드로우다운은 시작월 직전 고점부터 종료월(최저점)까지의 하락률입니다.")
             else:
                 st.info("드로우다운 구간이 발견되지 않았습니다.")
 
@@ -3724,10 +3825,10 @@ digraph G {
             df_off_c = df_off_c.sort_values(by="A_공격스코어", ascending=False)
             
             st.write("**주도 섹터 후보 순위 (1-3-6-12M 단순 평균 모멘텀):**")
-            st.dataframe(
+            render_html_table(
                 df_off_c[["Ticker", "현재가", "1M", "3M", "6M", "12M", "A_공격스코어"]]
                 .rename(columns={"A_공격스코어": "모멘텀 스코어"}),
-                use_container_width=True, hide_index=True
+                ticker_cols=("Ticker",)
             )
             
             st.subheader("🎯 최종 포트폴리오 가이드 (100% 단일 섹터 투자)")
@@ -3741,10 +3842,10 @@ digraph G {
             df_def_c = df_def_c.sort_values(by="A_방어스코어", ascending=False)
             
             st.write("**원자재 방어 자산 순위 (1-3-6-9-12M 단순 평균 모멘텀):**")
-            st.dataframe(
+            render_html_table(
                 df_def_c[["Ticker", "현재가", "1M", "3M", "6M", "9M", "12M", "A_방어스코어"]]
                 .rename(columns={"A_방어스코어": "모멘텀 스코어"}),
-                use_container_width=True, hide_index=True
+                ticker_cols=("Ticker",)
             )
             
             st.subheader("🎯 최종 포트폴리오 가이드")
@@ -3980,11 +4081,10 @@ digraph G {
             for idx, ep in enumerate(top10_c):
                 ep["순위"] = idx + 1
                 ep["드로우다운"] = f"{ep['드로우다운']:.1f}%"
-                ep["QQQ (같은 기간)"] = qqq_period_return_str(qqq_monthly_ret_c, ep["시작"], ep["종료"])
             if top10_c:
-                df_dd_top10_c = pd.DataFrame(top10_c)[["순위", "시작", "종료", "드로우다운", "QQQ (같은 기간)"]]
+                df_dd_top10_c = pd.DataFrame(top10_c)[["순위", "시작", "종료", "드로우다운"]]
                 st.dataframe(df_dd_top10_c, use_container_width=True, hide_index=True)
-                st.caption("※ QQQ (같은 기간)는 벤치마크 QQQ를 같은 시작~종료월 동안 보유했을 때의 수익률입니다. 드로우다운은 시작월 직전 고점부터 종료월(최저점)까지의 하락률이므로 두 값을 바로 비교할 수 있습니다.")
+                st.caption("※ 드로우다운은 시작월 직전 고점부터 종료월(최저점)까지의 하락률입니다.")
             else:
                 st.info("드로우다운 구간이 발견되지 않았습니다.")
 
@@ -4198,7 +4298,10 @@ digraph G {
             st.bar_chart(df_top5.set_index("티커 (Ticker)")[selected_sort_col])
         
         st.markdown("### 🏆 실시간 모멘텀 순위표")
-        st.dataframe(df_ranking, use_container_width=True)
+        _rk = df_ranking.copy()
+        _rk.insert(0, "순위", _rk.index)
+        render_html_table(_rk, ticker_cols=("티커 (Ticker)",))
+        st.caption("※ 티커 옆 괄호는 ETF의 한글 명칭이며, 티커에 마우스를 올리면 간략 설명이 표시됩니다. 점수·수익률 단위는 %입니다.")
 
     with c_calc:
         st.header("🧮 복리의 마법 & 미래 계산기")
