@@ -1436,12 +1436,22 @@ def render_drawdown_with_benchmark(chart_df, strategy_name):
     if "qqq_nav" in chart_df.columns:
         q_nav = pd.Series(chart_df["qqq_nav"].values, dtype=float)
         dd_df["QQQ"] = ((q_nav / q_nav.cummax() - 1.0) * 100.0).values
+    # 표시 구간 선택 (슬라이더로 원하는 기간만 확대해서 보기)
+    _all_dates = dd_df["date_str"].tolist()
+    if len(_all_dates) > 2:
+        _lo, _hi = st.select_slider(
+            "🔍 표시 구간 (양쪽 손잡이를 움직이면 해당 기간만 확대됩니다)",
+            options=_all_dates, value=(_all_dates[0], _all_dates[-1]),
+            key=f"dd_zoom_{strategy_name}",
+        )
+        _i0, _i1 = _all_dates.index(_lo), _all_dates.index(_hi)
+        dd_df = dd_df.iloc[_i0:_i1 + 1].reset_index(drop=True)
     long_df = dd_df.melt(id_vars="date_str", var_name="series", value_name="drawdown")
     long_df["drawdown"] = long_df["drawdown"].round(2)
 
     domain = [strategy_name, "QQQ"]
     color_scale = alt.Scale(domain=domain, range=["#dc2626", "#9ca3af"])
-    x_enc = alt.X("date_str:N", sort=None, title="년-월")
+    x_enc = alt.X("date_str:N", sort=None, title="년-월", axis=alt.Axis(labelOverlap=True))
     y_enc = alt.Y("drawdown:Q", title="MDD (%)")
     tip = [alt.Tooltip("date_str:N", title="년-월"), alt.Tooltip("series:N", title="구분"),
            alt.Tooltip("drawdown:Q", title="낙폭 (%)", format=".2f")]
@@ -1460,8 +1470,8 @@ def render_drawdown_with_benchmark(chart_df, strategy_name):
 
     if "QQQ" in dd_df.columns:
         st.caption(
-            f"빨강 = {strategy_name} (MDD {dd_df[strategy_name].min():.2f}%), "
-            f"연회색 = 벤치마크 QQQ (MDD {dd_df['QQQ'].min():.2f}%)"
+            f"빨강 = {strategy_name} (선택 구간 MDD {dd_df[strategy_name].min():.2f}%), "
+            f"연회색 = 벤치마크 QQQ (선택 구간 MDD {dd_df['QQQ'].min():.2f}%)"
         )
 
 
@@ -2025,7 +2035,7 @@ digraph G {
             
             col_h1, col_h2 = st.columns(2)
             for idx, date in enumerate(completed_12_months):
-                target_col = col_h1 if idx % 2 == 0 else col_h2
+                target_col = col_h1 if idx < 6 else col_h2  # 모바일에서 세로로 쌓여도 최신순 유지
                 
                 # 변수명 재사용 이슈 방지를 위한 hist_sig_a, hist_sig_b, hist_sig_c 구분 수정
                 hist_portfolio, hist_sig_a, hist_sig_b, hist_sig_c, dy_c = compute_historical_portfolio_at_month_end(
@@ -2196,8 +2206,8 @@ digraph G {
 
             color_scale_mix = alt.Scale(domain=["2026 혼합전략", "QQQ"], range=["#0ea5e9", "#808080"])
 
-            annual_bar_mix = alt.Chart(yearly_returns_mix).mark_bar(size=28).encode(
-                x=alt.X("year_str:N", title="연도", sort=year_sort_order_mix),
+            annual_bar_mix = alt.Chart(yearly_returns_mix).mark_bar().encode(
+                x=alt.X("year_str:N", title="연도", sort=year_sort_order_mix, scale=alt.Scale(paddingInner=0.5, paddingOuter=0.2)),
                 y=alt.Y("annual_return:Q", title="수익률 (%)"),
                 color=alt.Color("series:N", scale=color_scale_mix, legend=alt.Legend(title=None, orient="bottom")),
                 tooltip=[
@@ -2206,16 +2216,16 @@ digraph G {
                 ],
             )
             annual_labels_mix = alt.Chart(yearly_returns_mix).mark_text(
-                dy=alt.expr("datum.annual_return >= 0 ? -8 : 14"), fontWeight="bold", fontSize=11, color="#0f172a"
+                dy=alt.expr("datum.annual_return >= 0 ? -8 : 14"), fontWeight="bold", fontSize=10, color="#0f172a"
             ).encode(
-                x=alt.X("year_str:N", sort=year_sort_order_mix),
+                x=alt.X("year_str:N", sort=year_sort_order_mix, scale=alt.Scale(paddingInner=0.5, paddingOuter=0.2)),
                 y=alt.Y("annual_return:Q"),
-                text=alt.Text("annual_return:Q", format="+.1f"),
+                text=alt.Text("annual_return:Q", format=".1f"),
             )
             qqq_points_mix = alt.Chart(qqq_yearly_mix).mark_point(
                 filled=True, size=110, stroke="white", strokeWidth=1.2
             ).encode(
-                x=alt.X("year_str:N", sort=year_sort_order_mix),
+                x=alt.X("year_str:N", sort=year_sort_order_mix, scale=alt.Scale(paddingInner=0.5, paddingOuter=0.2)),
                 y=alt.Y("annual_return:Q"),
                 color=alt.Color("series:N", scale=color_scale_mix, legend=alt.Legend(title=None, orient="bottom")),
                 tooltip=[
@@ -2729,8 +2739,8 @@ digraph G {
 
             color_scale_a = alt.Scale(domain=["전략A", "QQQ"], range=["#50ad6a", "#808080"])
 
-            annual_bar_a = alt.Chart(yearly_returns_a).mark_bar(size=28).encode(
-                x=alt.X("year_str:N", title="연도", sort=year_sort_order_a),
+            annual_bar_a = alt.Chart(yearly_returns_a).mark_bar().encode(
+                x=alt.X("year_str:N", title="연도", sort=year_sort_order_a, scale=alt.Scale(paddingInner=0.5, paddingOuter=0.2)),
                 y=alt.Y("annual_return:Q", title="수익률 (%)"),
                 color=alt.Color("series:N", scale=color_scale_a, legend=alt.Legend(title=None, orient="bottom")),
                 tooltip=[
@@ -2739,16 +2749,16 @@ digraph G {
                 ],
             )
             annual_labels_a = alt.Chart(yearly_returns_a).mark_text(
-                dy=alt.expr("datum.annual_return >= 0 ? -8 : 14"), fontWeight="bold", fontSize=11, color="#0f172a"
+                dy=alt.expr("datum.annual_return >= 0 ? -8 : 14"), fontWeight="bold", fontSize=10, color="#0f172a"
             ).encode(
-                x=alt.X("year_str:N", sort=year_sort_order_a),
+                x=alt.X("year_str:N", sort=year_sort_order_a, scale=alt.Scale(paddingInner=0.5, paddingOuter=0.2)),
                 y=alt.Y("annual_return:Q"),
-                text=alt.Text("annual_return:Q", format="+.1f"),
+                text=alt.Text("annual_return:Q", format=".1f"),
             )
             qqq_points_a = alt.Chart(qqq_yearly_a).mark_point(
                 filled=True, size=110, stroke="white", strokeWidth=1.2
             ).encode(
-                x=alt.X("year_str:N", sort=year_sort_order_a),
+                x=alt.X("year_str:N", sort=year_sort_order_a, scale=alt.Scale(paddingInner=0.5, paddingOuter=0.2)),
                 y=alt.Y("annual_return:Q"),
                 color=alt.Color("series:N", scale=color_scale_a, legend=alt.Legend(title=None, orient="bottom")),
                 tooltip=[
@@ -3218,8 +3228,8 @@ digraph G {
 
             color_scale_b = alt.Scale(domain=["전략B", "QQQ"], range=["#f97316", "#808080"])
 
-            annual_bar_b = alt.Chart(yearly_returns_b).mark_bar(size=28).encode(
-                x=alt.X("year_str:N", title="연도", sort=year_sort_order_b),
+            annual_bar_b = alt.Chart(yearly_returns_b).mark_bar().encode(
+                x=alt.X("year_str:N", title="연도", sort=year_sort_order_b, scale=alt.Scale(paddingInner=0.5, paddingOuter=0.2)),
                 y=alt.Y("annual_return:Q", title="수익률 (%)"),
                 color=alt.Color("series:N", scale=color_scale_b, legend=alt.Legend(title=None, orient="bottom")),
                 tooltip=[
@@ -3228,16 +3238,16 @@ digraph G {
                 ],
             )
             annual_labels_b = alt.Chart(yearly_returns_b).mark_text(
-                dy=alt.expr("datum.annual_return >= 0 ? -8 : 14"), fontWeight="bold", fontSize=11, color="#0f172a"
+                dy=alt.expr("datum.annual_return >= 0 ? -8 : 14"), fontWeight="bold", fontSize=10, color="#0f172a"
             ).encode(
-                x=alt.X("year_str:N", sort=year_sort_order_b),
+                x=alt.X("year_str:N", sort=year_sort_order_b, scale=alt.Scale(paddingInner=0.5, paddingOuter=0.2)),
                 y=alt.Y("annual_return:Q"),
-                text=alt.Text("annual_return:Q", format="+.1f"),
+                text=alt.Text("annual_return:Q", format=".1f"),
             )
             qqq_points_b = alt.Chart(qqq_yearly_b).mark_point(
                 filled=True, size=110, stroke="white", strokeWidth=1.2
             ).encode(
-                x=alt.X("year_str:N", sort=year_sort_order_b),
+                x=alt.X("year_str:N", sort=year_sort_order_b, scale=alt.Scale(paddingInner=0.5, paddingOuter=0.2)),
                 y=alt.Y("annual_return:Q"),
                 color=alt.Color("series:N", scale=color_scale_b, legend=alt.Legend(title=None, orient="bottom")),
                 tooltip=[
@@ -3714,8 +3724,8 @@ digraph G {
 
             color_scale_c = alt.Scale(domain=["전략C", "QQQ"], range=["#8b5cf6", "#808080"])
 
-            annual_bar_c = alt.Chart(yearly_returns_c).mark_bar(size=28).encode(
-                x=alt.X("year_str:N", title="연도", sort=year_sort_order_c),
+            annual_bar_c = alt.Chart(yearly_returns_c).mark_bar().encode(
+                x=alt.X("year_str:N", title="연도", sort=year_sort_order_c, scale=alt.Scale(paddingInner=0.5, paddingOuter=0.2)),
                 y=alt.Y("annual_return:Q", title="수익률 (%)"),
                 color=alt.Color("series:N", scale=color_scale_c, legend=alt.Legend(title=None, orient="bottom")),
                 tooltip=[
@@ -3724,16 +3734,16 @@ digraph G {
                 ],
             )
             annual_labels_c = alt.Chart(yearly_returns_c).mark_text(
-                dy=alt.expr("datum.annual_return >= 0 ? -8 : 14"), fontWeight="bold", fontSize=11, color="#0f172a"
+                dy=alt.expr("datum.annual_return >= 0 ? -8 : 14"), fontWeight="bold", fontSize=10, color="#0f172a"
             ).encode(
-                x=alt.X("year_str:N", sort=year_sort_order_c),
+                x=alt.X("year_str:N", sort=year_sort_order_c, scale=alt.Scale(paddingInner=0.5, paddingOuter=0.2)),
                 y=alt.Y("annual_return:Q"),
-                text=alt.Text("annual_return:Q", format="+.1f"),
+                text=alt.Text("annual_return:Q", format=".1f"),
             )
             qqq_points_c = alt.Chart(qqq_yearly_c).mark_point(
                 filled=True, size=110, stroke="white", strokeWidth=1.2
             ).encode(
-                x=alt.X("year_str:N", sort=year_sort_order_c),
+                x=alt.X("year_str:N", sort=year_sort_order_c, scale=alt.Scale(paddingInner=0.5, paddingOuter=0.2)),
                 y=alt.Y("annual_return:Q"),
                 color=alt.Color("series:N", scale=color_scale_c, legend=alt.Legend(title=None, orient="bottom")),
                 tooltip=[
@@ -4188,4 +4198,22 @@ digraph G {
         for col in ["누적 납입원금", "세전 일반복리", "세후 수령예정액", "세후 실질가치 (물가반영)"]:
             df_display[col] = df_display[col].apply(format_krw)
         
-        st.dataframe(df_display, use_container_width=True, height=(len(df_display) + 1) * 35 + 3)
+        _hdr = "".join(f"<th>{c}</th>" for c in df_display.columns)
+        _body = ""
+        _last = len(df_display) - 1
+        for _ri, (_, _row) in enumerate(df_display.iterrows()):
+            _cls = ' class="last"' if _ri == _last else ""
+            _body += f"<tr{_cls}>" + "".join(f"<td>{v}</td>" for v in _row.values) + "</tr>"
+        st.markdown(
+            "<style>"
+            ".growth-tbl{width:100%;border-collapse:collapse;font-size:0.9rem;margin-bottom:0.5rem}"
+            ".growth-tbl th{background:#e2e8f0;color:#334155;padding:8px 6px;text-align:center;border:1px solid #cbd5e1;word-break:keep-all}"
+            ".growth-tbl td{padding:7px 6px;text-align:right;border:1px solid #e2e8f0;white-space:nowrap}"
+            ".growth-tbl td:first-child{text-align:center}"
+            ".growth-tbl tr:nth-child(even) td{background:#f8fafc}"
+            ".growth-tbl tr.last td{background:#e8f1fa;font-weight:700}"
+            "@media (max-width:640px){.growth-tbl{font-size:0.62rem}.growth-tbl th{font-size:0.6rem}.growth-tbl th,.growth-tbl td{padding:5px 2px}}"
+            "</style>"
+            f'<table class="growth-tbl"><thead><tr>{_hdr}</tr></thead><tbody>{_body}</tbody></table>',
+            unsafe_allow_html=True,
+        )
