@@ -1413,6 +1413,19 @@ def render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="mix"):
         st.caption("※ 일별 종가 기준입니다. 장중에는 최근일 값이 실시간 가격으로 계속 바뀝니다. 월중 리밸런싱이 없는 매수 후 보유 가정이며, 슬리피지·거래비용·세금은 반영되지 않았습니다.")
 
 
+def qqq_period_return_str(qqq_ret_pct, start_ym, end_ym):
+    """드로우다운 구간(시작~종료월, "YYYY/MM")과 같은 달들의 QQQ 누적 수익률 문자열."""
+    try:
+        ser = pd.Series(qqq_ret_pct).dropna()
+        ym = pd.DatetimeIndex(ser.index).strftime("%Y/%m")
+        sub = ser[(ym >= start_ym) & (ym <= end_ym)]
+        if len(sub) == 0:
+            return "-"
+        return f"{(np.prod(1 + sub.values / 100.0) - 1) * 100:+.1f}%"
+    except Exception:
+        return "-"
+
+
 def render_drawdown_with_benchmark(chart_df, strategy_name):
     """낙폭 히스토리: 전략(진한 빨강) 위에 벤치마크 QQQ(연한 회색)를 겹쳐 표시."""
     import altair as alt
@@ -2316,10 +2329,11 @@ digraph G {
                 ep["A 전략"] = f"{_period_ret_mix(_ser_a_mix, ep['_s'], ep['_e']):+.1f}%"
                 ep["B 전략"] = f"{_period_ret_mix(_ser_b_mix, ep['_s'], ep['_e']):+.1f}%"
                 ep["C 전략"] = f"{_period_ret_mix(_ser_c_mix, ep['_s'], ep['_e']):+.1f}%"
+                ep["QQQ (같은 기간)"] = qqq_period_return_str(qqq_monthly_ret_mix, ep["시작"], ep["종료"])
             if top10_mix:
-                df_dd_top10_mix = pd.DataFrame(top10_mix)[["순위", "시작", "종료", "드로우다운", "A 전략", "B 전략", "C 전략"]].rename(columns={"드로우다운": "합계(A+B+C) 드로우다운"})
+                df_dd_top10_mix = pd.DataFrame(top10_mix)[["순위", "시작", "종료", "드로우다운", "A 전략", "B 전략", "C 전략", "QQQ (같은 기간)"]].rename(columns={"드로우다운": "합계(A+B+C) 드로우다운"})
                 st.dataframe(df_dd_top10_mix, use_container_width=True, hide_index=True)
-                st.caption("※ 합계(A+B+C)는 세 전략을 1/3씩 섞은 혼합 포트폴리오의 낙폭이고, A·B·C 열은 같은 기간(시작~종료월) 각 전략을 단독(100%)으로 운용했을 때의 수익률입니다.")
+                st.caption("※ 합계(A+B+C)는 세 전략을 1/3씩 섞은 혼합 포트폴리오의 낙폭이고, A·B·C 열은 같은 기간(시작~종료월) 각 전략을 단독(100%)으로 운용했을 때의 수익률입니다. QQQ는 벤치마크를 같은 기간 보유했을 때의 수익률입니다.")
             else:
                 st.info("드로우다운 구간이 발견되지 않았습니다.")
 
@@ -2835,9 +2849,11 @@ digraph G {
             for idx, ep in enumerate(top10_a):
                 ep["순위"] = idx + 1
                 ep["드로우다운"] = f"{ep['드로우다운']:.1f}%"
+                ep["QQQ (같은 기간)"] = qqq_period_return_str(qqq_monthly_ret_a, ep["시작"], ep["종료"])
             if top10_a:
-                df_dd_top10_a = pd.DataFrame(top10_a)[["순위", "시작", "종료", "드로우다운"]]
+                df_dd_top10_a = pd.DataFrame(top10_a)[["순위", "시작", "종료", "드로우다운", "QQQ (같은 기간)"]]
                 st.dataframe(df_dd_top10_a, use_container_width=True, hide_index=True)
+                st.caption("※ QQQ (같은 기간)는 벤치마크 QQQ를 같은 시작~종료월 동안 보유했을 때의 수익률입니다. 드로우다운은 시작월 직전 고점부터 종료월(최저점)까지의 하락률이므로 두 값을 바로 비교할 수 있습니다.")
             else:
                 st.info("드로우다운 구간이 발견되지 않았습니다.")
 
@@ -3322,9 +3338,11 @@ digraph G {
             for idx, ep in enumerate(top10_b):
                 ep["순위"] = idx + 1
                 ep["드로우다운"] = f"{ep['드로우다운']:.1f}%"
+                ep["QQQ (같은 기간)"] = qqq_period_return_str(qqq_monthly_ret_b, ep["시작"], ep["종료"])
             if top10_b:
-                df_dd_top10_b = pd.DataFrame(top10_b)[["순위", "시작", "종료", "드로우다운"]]
+                df_dd_top10_b = pd.DataFrame(top10_b)[["순위", "시작", "종료", "드로우다운", "QQQ (같은 기간)"]]
                 st.dataframe(df_dd_top10_b, use_container_width=True, hide_index=True)
+                st.caption("※ QQQ (같은 기간)는 벤치마크 QQQ를 같은 시작~종료월 동안 보유했을 때의 수익률입니다. 드로우다운은 시작월 직전 고점부터 종료월(최저점)까지의 하락률이므로 두 값을 바로 비교할 수 있습니다.")
             else:
                 st.info("드로우다운 구간이 발견되지 않았습니다.")
 
@@ -3816,9 +3834,11 @@ digraph G {
             for idx, ep in enumerate(top10_c):
                 ep["순위"] = idx + 1
                 ep["드로우다운"] = f"{ep['드로우다운']:.1f}%"
+                ep["QQQ (같은 기간)"] = qqq_period_return_str(qqq_monthly_ret_c, ep["시작"], ep["종료"])
             if top10_c:
-                df_dd_top10_c = pd.DataFrame(top10_c)[["순위", "시작", "종료", "드로우다운"]]
+                df_dd_top10_c = pd.DataFrame(top10_c)[["순위", "시작", "종료", "드로우다운", "QQQ (같은 기간)"]]
                 st.dataframe(df_dd_top10_c, use_container_width=True, hide_index=True)
+                st.caption("※ QQQ (같은 기간)는 벤치마크 QQQ를 같은 시작~종료월 동안 보유했을 때의 수익률입니다. 드로우다운은 시작월 직전 고점부터 종료월(최저점)까지의 하락률이므로 두 값을 바로 비교할 수 있습니다.")
             else:
                 st.info("드로우다운 구간이 발견되지 않았습니다.")
 
