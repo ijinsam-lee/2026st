@@ -1639,6 +1639,12 @@ _GL_DEFS = [
     (("표준편차",), "수익률이 평균에서 흩어진 정도. 클수록 변동이 큼"),
     (("YTD",), "Year-To-Date. 올해 1월 1일부터 현재까지의 누적 수익률"),
     (("슬리피지",), "주문 예상가와 실제 체결가의 차이로 생기는 숨은 거래비용"),
+    (("대공황",), "1929년 미국 증시 폭락으로 시작된 세계적 경제 불황. S&P500이 1929~1932년 약 80%대 하락"),
+    (("블랙먼데이",), "1987년 10월 19일 미국 증시가 하루에 약 20% 폭락한 사건. 프로그램 매매와 공포 매도가 겹침"),
+    (("닷컴버블",), "1990년대 후반 인터넷 기업 주가 거품이 2000년 3월부터 꺼진 폭락. 나스닥이 2002년까지 약 78% 하락"),
+    (("글로벌 금융위기", "금융위기"), "2007~2009년 미국 서브프라임 모기지 부실에서 시작된 세계 금융 위기. S&P500이 약 57% 하락"),
+    (("긴축 발작",), "2022년 연준의 급격한 금리 인상으로 주식·채권이 동반 하락한 시기"),
+    (("전고점 회복",), "하락 뒤 주가가 직전 최고점을 다시 넘는 데 걸린 시간. 길수록 '물린 기간'이 깁니다"),
 ]
 GLOSSARY = {}
 for _keys, _d in _GL_DEFS:
@@ -1774,6 +1780,93 @@ def render_alloc_chips(df, ticker_col="자산군 (Ticker)", weight_col="배분 �
                   f'<div><span class="al-t">{ticker_cell_html(r[ticker_col], show_name=False)}</span></div>'
                   f'<div class="al-w">{_html.escape(w)}</div></div>')
     st.markdown(f'<div class="al-wrap">{chips}</div>', unsafe_allow_html=True)
+
+
+# ===================== 장기 낙폭 (SPY·QQQ 등) 헬퍼 =====================
+LONG_EVENTS = [
+    ("대공황", "1929 대공황", "1929-09-01", "1932-12-31"),
+    ("오일쇼크", "1973-74 오일쇼크 약세장", "1973-01-01", "1974-12-31"),
+    ("블랙먼데이", "1987 블랙먼데이", "1987-08-01", "1987-12-31"),
+    ("LTCM", "1998 LTCM·러시아 위기", "1998-07-01", "1998-10-31"),
+    ("닷컴", "2000 닷컴버블 붕괴", "2000-03-01", "2002-12-31"),
+    ("금융위기", "2007-09 글로벌 금융위기", "2007-10-01", "2009-04-30"),
+    ("유럽위기", "2011 美 신용등급 강등·유럽 재정위기", "2011-04-01", "2011-10-31"),
+    ("중국쇼크", "2015-16 중국 쇼크·유가 급락", "2015-05-01", "2016-02-29"),
+    ("2018 Q4", "2018 4분기 긴축·무역분쟁", "2018-09-01", "2018-12-31"),
+    ("코로나", "2020 코로나 팬데믹", "2020-02-01", "2020-04-30"),
+    ("2022 긴축", "2022 긴축 발작 (금리 인상기)", "2022-01-01", "2022-12-31"),
+]
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def get_long_history(symbols, start):
+    """일별 종가(배당·분할 반영) 장기 시계열. symbols는 tuple. {심볼: Series}"""
+    out = {}
+    for sym in symbols:
+        try:
+            df = yf.download(sym, start=start, interval="1d", progress=False, auto_adjust=True)
+        except Exception:
+            continue
+        if df is None or len(df) == 0:
+            continue
+        close = df["Close"] if "Close" in df.columns else df.iloc[:, 0]
+        if isinstance(close, pd.DataFrame):
+            close = close.iloc[:, 0]
+        close = close.dropna()
+        if getattr(close.index, "tz", None) is not None:
+            close.index = close.index.tz_localize(None)
+        close = close[close > 0].astype(float)
+        if len(close) > 50:
+            out[sym] = close
+    return out
+
+
+def _fmt_dur(days):
+    if days is None:
+        return "-"
+    if days >= 365:
+        return f"{days / 365.25:.1f}년"
+    if days >= 45:
+        return f"{days / 30.44:.0f}개월"
+    return f"{int(days)}일"
+
+
+def dd_episodes(px):
+    """고점 → 저점 → (전고점 회복) 낙폭 구간 목록."""
+    vals, idx = px.values, px.index
+    peak_i, trough_i, eps = 0, None, []
+    for i in range(1, len(vals)):
+        if vals[i] >= vals[peak_i]:
+            if trough_i is not None:
+                eps.append((peak_i, trough_i, i))
+                trough_i = None
+            peak_i = i
+        elif trough_i is None or vals[i] < vals[trough_i]:
+            trough_i = i
+    if trough_i is not None:
+        eps.append((peak_i, trough_i, None))
+    return [{"peak": idx[a], "trough": idx[b], "recovery": (idx[c] if c is not None else None),
+             "depth": (vals[b] / vals[a] - 1) * 100} for a, b, c in eps]
+
+
+def event_stats(px, start, end):
+    """이슈 기간 안에서의 고점→저점 낙폭, 전고점 회복, 저점 후 1년 수익률. 데이터가 없으면 None."""
+    s0, e0 = pd.Timestamp(start), pd.Timestamp(end)
+    w = px[(px.index >= s0) & (px.index <= e0)]
+    if len(w) < 5 or (w.index[0] - s0).days > 45:
+        return None
+    dd = w / w.cummax() - 1
+    t = dd.idxmin()
+    depth = float(dd.min() * 100)
+    if depth > -3:
+        return None
+    p = w.loc[:t].idxmax()
+    after = px.loc[t:]
+    rec = after[after >= px.loc[p]]
+    j = px.index.get_loc(t)
+    rebound = float((px.iloc[j + 252] / px.iloc[j] - 1) * 100) if j + 252 < len(px) else None
+    return {"peak": p, "trough": t, "depth": depth,
+            "recovery": (rec.index[0] if len(rec) else None), "rebound": rebound}
 
 
 def render_gl_table(df):
@@ -2073,12 +2166,13 @@ else:
     realtime_dy = get_sp500_dividend_yield()
     is_attack_c = realtime_dy > 1.33
     
-    tab_2026, tab_a, tab_b, tab_c, tab_rank, tab_calc = st.tabs([
+    tab_2026, tab_a, tab_b, tab_c, tab_rank, tab_mdd, tab_calc = st.tabs([
         "🏆 2026 혼합전략", 
         "🛡️ 전략 A", 
         "⚡ 전략 B", 
         "🔄 전략 C",
         "🇺🇸 미국 ETF 랭킹",
+        "📉 장기 낙폭",
         "🧮 자산 계산기"
     ])
 
@@ -2192,6 +2286,8 @@ else:
         c_c = st.container()
     with tab_rank:
         c_rank = st.container()
+    with tab_mdd:
+        c_mdd = st.container()
     with tab_calc:
         c_calc = st.container()
 
@@ -4697,6 +4793,129 @@ digraph G {
         _rk.insert(0, "순위", _rk.index)
         render_html_table(_rk, ticker_cols=("티커 (Ticker)",))
         st.caption("※ 티커 옆 괄호는 ETF의 한글 명칭이며, 티커에 마우스를 올리면 간략 설명이 표시됩니다. 점수·수익률 단위는 %입니다.")
+
+    with c_mdd:
+        import altair as alt
+        st.header("📉 SPY·QQQ 장기 낙폭 (경각심용)")
+        st.caption("내 전략은 2015년 이전 백테스트가 어려워, 닷컴버블·금융위기 같은 대형 폭락을 SPY·QQQ로 대신 확인하는 참고 화면입니다. 전략 성과와는 무관하며 일별 종가 기준입니다.")
+
+        _LONG_MODES = {
+            "ETF 30년 (배당 포함)": ("1996-01-01", [("SPY", "SPY"), ("QQQ", "QQQ")]),
+            "지수 초장기 (대공황 포함 · 배당 제외)": ("1927-12-30", [("S&P500", "^GSPC"), ("나스닥100", "^NDX")]),
+        }
+        _mode_names = list(_LONG_MODES)
+        long_mode = st.radio("데이터 범위", _mode_names, horizontal=True, key="long_mode")
+        _mi = _mode_names.index(long_mode)
+        _start, _series = _LONG_MODES[long_mode]
+        with st.spinner("장기 가격 데이터를 불러오는 중..."):
+            _hist = get_long_history(tuple(sym for _, sym in _series), _start)
+        long_px = {n: _hist[sym] for n, sym in _series if sym in _hist}
+
+        if not long_px:
+            st.warning("장기 가격 데이터를 불러오지 못했습니다. 잠시 후 새로고침해 주세요.")
+        else:
+            if _mi == 0:
+                st.caption("SPY는 1993년, QQQ는 1999년 3월 상장이라 QQQ는 약 27년치입니다. 1929 대공황·1987 블랙먼데이는 ETF가 없어 '지수 초장기'에서 확인하세요.")
+            else:
+                st.caption("S&P500(1927~)·나스닥100(1985~) 지수의 가격 기준이라 배당이 빠져 ETF보다 낙폭이 조금 더 깊게 나옵니다. 대공황·1987년·오일쇼크를 볼 수 있습니다.")
+
+            # ---- 요약 카드 ----
+            _cards_mdd, _cards_cur = [], []
+            for n, px in long_px.items():
+                dd_s = px / px.cummax() - 1
+                t = dd_s.idxmin()
+                pk = px.loc[:t].idxmax()
+                mdd = float(dd_s.min() * 100)
+                _cards_mdd.append((f"{n} 최대 낙폭 (MDD)", f"{mdd:.2f}%",
+                                   f"{pk:%Y-%m} → {t:%Y-%m} · 초기 투자금이면 약 {fmt_krw(COST_CAPITAL * abs(mdd) / 100)} 평가손실", "neg"))
+                cur = float(dd_s.iloc[-1] * 100)
+                _cards_cur.append((f"{n} 현재 낙폭", f"{cur:.2f}%",
+                                   f"역대 고점 {px.idxmax():%Y-%m-%d} 대비", "neg" if cur <= -10 else "neutral"))
+            hl_cards(_cards_mdd + _cards_cur)
+
+            # ---- 낙폭 히스토리 ----
+            st.markdown("##### 📉 낙폭 (Drawdown) 히스토리")
+            frames = []
+            for n, px in long_px.items():
+                d = ((px / px.cummax() - 1) * 100).resample("W").min().dropna()
+                frames.append(pd.DataFrame({"date": d.index, "series": n, "drawdown": d.values.round(2)}))
+            long_df = pd.concat(frames, ignore_index=True)
+            _y_all = list(range(int(long_df["date"].dt.year.min()), int(long_df["date"].dt.year.max()) + 1))
+            if len(_y_all) > 2:
+                _y0, _y1 = st.select_slider("🔍 표시 구간 (년)", options=_y_all, value=(_y_all[0], _y_all[-1]), key=f"long_zoom_{_mi}")
+            else:
+                _y0, _y1 = _y_all[0], _y_all[-1]
+            view_df = long_df[(long_df["date"].dt.year >= _y0) & (long_df["date"].dt.year <= _y1)]
+
+            _names = list(long_px)
+            _palette = ["#2563eb", "#dc2626"][:len(_names)]
+            x_enc = alt.X("date:T", title=None, axis=alt.Axis(format="%Y", labelOverlap=True))
+            y_enc = alt.Y("drawdown:Q", title="낙폭 (%)")
+            color_enc = alt.Color("series:N", scale=alt.Scale(domain=_names, range=_palette), sort=_names,
+                                  legend=alt.Legend(orient="top", title=None))
+            tip = [alt.Tooltip("date:T", title="주", format="%Y-%m-%d"), alt.Tooltip("series:N", title="구분"),
+                   alt.Tooltip("drawdown:Q", title="낙폭 (%)", format=".2f")]
+            layers = [alt.Chart(view_df).mark_area(opacity=0.33, line={"strokeWidth": 1.2}).encode(x=x_enc, y=y_enc, color=color_enc, tooltip=tip)]
+
+            ev_rows = []
+            for short, full, a, b in LONG_EVENTS:
+                for n, px in long_px.items():
+                    es = event_stats(px, a, b)
+                    if es:
+                        ev_rows.append({"date": es["trough"], "label": short})
+                        break
+            ev_df = pd.DataFrame(ev_rows)
+            if len(ev_df):
+                ev_df = ev_df[(ev_df["date"].dt.year >= _y0) & (ev_df["date"].dt.year <= _y1)].reset_index(drop=True)
+            if len(ev_df):
+                layers.append(alt.Chart(ev_df).mark_rule(color="#64748b", strokeDash=[3, 3]).encode(x="date:T"))
+                for k in range(3):
+                    sub = ev_df[ev_df.index % 3 == k]
+                    if len(sub):
+                        layers.append(alt.Chart(sub).mark_text(align="left", dx=3, fontSize=10, color="#475569").encode(
+                            x="date:T", y=alt.value(10 + 12 * k), text="label:N"))
+            st.altair_chart(alt.layer(*layers).properties(height=270), use_container_width=True)
+            _rng_txt = " · ".join(f"{n} {view_df[view_df['series'] == n]['drawdown'].min():.1f}%" for n in _names if (view_df['series'] == n).any())
+            st.caption(f"점선 = 주요 이슈의 저점 시기. 선택 구간 최대 낙폭: {_rng_txt} (주간 기준 표시, 계산은 일별 종가)")
+
+            # ---- 드로우다운 Top 10 ----
+            st.markdown("##### 🚨 포트폴리오 드로우다운 Top 10")
+            _pick = st.radio("자산", _names, horizontal=True, key=f"long_top10_{_mi}") if len(_names) > 1 else _names[0]
+            eps = sorted(dd_episodes(long_px[_pick]), key=lambda e: e["depth"])[:10]
+            top_rows = []
+            for i, e in enumerate(eps, 1):
+                issue = next((short for short, full, a, b in LONG_EVENTS
+                              if pd.Timestamp(a) <= e["trough"] <= pd.Timestamp(b)), "-")
+                top_rows.append({
+                    "순위": i, "고점일": f"{e['peak']:%Y-%m-%d}", "저점일": f"{e['trough']:%Y-%m-%d}",
+                    "최대 낙폭": f"{e['depth']:.1f}%", "하락 기간": _fmt_dur((e["trough"] - e["peak"]).days),
+                    "전고점 회복": (f"{_fmt_dur((e['recovery'] - e['trough']).days)} 후" if e["recovery"] is not None else "미회복"),
+                    "주요 이슈": issue,
+                })
+            if top_rows:
+                st.dataframe(pd.DataFrame(top_rows), use_container_width=True, hide_index=True)
+                st.caption("※ 고점 → 저점 → 전고점 회복까지를 한 구간으로 봅니다. '전고점 회복'은 저점에서 직전 고점을 다시 넘기까지 걸린 시간입니다.")
+
+            # ---- 폭락 시장 성과 ----
+            st.markdown("##### 🔻 폭락 시장 성과 (대형 이슈별)")
+            crash_rows = []
+            for short, full, a, b in LONG_EVENTS:
+                for n, px in long_px.items():
+                    es = event_stats(px, a, b)
+                    if not es:
+                        continue
+                    crash_rows.append({
+                        "이슈": full, "자산": n, "고점일": f"{es['peak']:%Y-%m-%d}", "저점일": f"{es['trough']:%Y-%m-%d}",
+                        "최대 낙폭": f"{es['depth']:.1f}%", "고점→저점": _fmt_dur((es["trough"] - es["peak"]).days),
+                        "전고점 회복": (f"{_fmt_dur((es['recovery'] - es['trough']).days)} 후 ({es['recovery']:%Y-%m})"
+                                      if es["recovery"] is not None else "미회복"),
+                        "저점 후 1년": (f"{es['rebound']:+.0f}%" if es["rebound"] is not None else "-"),
+                    })
+            if crash_rows:
+                st.dataframe(pd.DataFrame(crash_rows), use_container_width=True, hide_index=True)
+                st.caption("※ 낙폭은 각 이슈 기간 안의 고점→저점 기준이라, 전체 기간의 최대 낙폭(역대 고점 기준)과 다를 수 있습니다. 데이터가 없는 시기는 표시하지 않습니다.")
+            else:
+                st.info("표시할 폭락 구간 데이터가 없습니다.")
 
     with c_calc:
         st.header("🧮 복리의 마법 & 미래 계산기")
