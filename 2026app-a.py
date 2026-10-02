@@ -1577,17 +1577,17 @@ st.markdown("<style>.gl{border-bottom:1px dotted #64748b;cursor:help;-webkit-tap
 # ===================== 핵심 수치 강조 (비중 칩 · 일별/월별 복리 수익 카드) =====================
 st.markdown("""<style>
 .hl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin:0.3rem 0 0.7rem}
-.hl-card{border-radius:12px;padding:10px 12px;border:2px solid #3b82f6;background:#eff6ff;color:#1d4ed8}
-.hl-card.pos{border-color:#10b981;background:#ecfdf5;color:#047857}
-.hl-card.neg{border-color:#ef4444;background:#fef2f2;color:#b91c1c}
+.hl-card{border-radius:12px;padding:9px 12px;border:1px solid #bfdbfe;background:#f5f9ff;color:#2563eb}
+.hl-card.pos{border-color:#a7f3d0;background:#f3fcf8;color:#059669}
+.hl-card.neg{border-color:#fecaca;background:#fff6f6;color:#dc2626}
 .hl-card .hl-l{font-size:0.78rem;font-weight:700;color:#334155;word-break:keep-all}
-.hl-card .hl-v{font-size:1.6rem;font-weight:800;line-height:1.25}
+.hl-card .hl-v{font-size:1.4rem;font-weight:700;line-height:1.25}
 .hl-card .hl-s{font-size:0.72rem;color:#64748b;word-break:keep-all}
 .al-wrap{display:flex;flex-wrap:wrap;gap:8px;margin:0.3rem 0 0.6rem}
-.al-chip{flex:1 1 140px;border-radius:12px;padding:10px 12px;background:#fff;border:1px solid #e2e8f0;border-left:8px solid #3b82f6;box-shadow:0 1px 3px rgba(15,23,42,.08)}
-.al-chip .al-t{font-size:1.15rem;font-weight:800;color:#0f172a}
+.al-chip{flex:1 1 140px;border-radius:12px;padding:10px 12px;background:#fff;border:1px solid #e2e8f0;border-left:5px solid #3b82f6;box-shadow:0 1px 2px rgba(15,23,42,.05)}
+.al-chip .al-t{font-size:1.05rem;font-weight:700;color:#0f172a}
 .al-chip .al-n{font-size:0.78rem;color:#64748b;margin-left:4px}
-.al-chip .al-w{font-size:1.7rem;font-weight:800;line-height:1.2;color:#0f172a}
+.al-chip .al-w{font-size:1.45rem;font-weight:700;line-height:1.2;color:#0f172a}
 </style>""", unsafe_allow_html=True)
 
 
@@ -1599,7 +1599,7 @@ def hl_cards(items):
         if isinstance(val, (int, float, np.floating)):
             if tone == "auto":
                 tone = "pos" if val > 0 else ("neg" if val < 0 else "neutral")
-            val = f"{val:+.2f}%"
+            val = f"{val:.2f}%" if label.startswith("연환산") else f"{val:+.2f}%"
         cls = {"pos": " pos", "neg": " neg"}.get(tone, "")
         html += (f'<div class="hl-card{cls}"><div class="hl-l">{_html.escape(label)}</div>'
                  f'<div class="hl-v">{_html.escape(str(val))}</div><div class="hl-s">{_html.escape(sub)}</div></div>')
@@ -1713,8 +1713,8 @@ def render_alloc_table(df):
         body += f'<tr class="main">{cells}</tr><tr class="detail"><td colspan="{len(num_cols)}" class="t">{detail}</td></tr>'
     st.markdown(
         _TBL_CSS
-        + "<style>.dtbl td.wt{background:#fef9c3 !important;font-size:1.15em;font-weight:800;color:#0f172a}"
-        + ".dtbl td.l .tk{font-size:1.15em;color:#0f172a}.dtbl td.l .tk-name{display:block;margin-left:0}"
+        + "<style>.dtbl td.wt{background:#fefce8 !important;font-size:1.08em;font-weight:700;color:#0f172a}"
+        + ".dtbl td.l .tk{font-size:1.08em;color:#0f172a}.dtbl td.l .tk-name{display:block;margin-left:0}"
         + ".dtbl tr.detail td{background:#f1f5f9;color:#334155;font-size:0.92em;line-height:1.45}"
         + ".dtbl tr.main td{border-bottom:none}.dtbl tr.detail td{border-top:none}</style>"
         + f'<table class="dtbl"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>',
@@ -2410,10 +2410,10 @@ digraph G {
                         legend=alt.Legend(
                             orient="bottom",
                             title=None,
-                            labelFontSize=15,
+                            labelFontSize=13.5,
                             labelFontWeight="bold",
                             symbolType="circle",
-                            symbolSize=220,
+                            symbolSize=160,
                             columns=2,
                             labelColor="#1e293b",
                             padding=15
@@ -2611,10 +2611,11 @@ digraph G {
             cagr_mix = ((final_nav_mix / 100.0) ** (1 / total_years_mix) - 1) * 100
             mdd_mix = bt_results_mix["drawdown"].min()
 
-            bmc1, bmc2, bmc3 = st.columns(3)
-            bmc1.metric("연환산 복리 수익률 (CAGR)", f"{cagr_mix:.2f}%")
-            bmc2.metric("최대 낙폭 (MDD)", f"{mdd_mix:.2f}%", delta_color="inverse")
-            bmc3.metric("최종 자산 가치 (NAV)", f"{final_nav_mix:.1f}", "초기금 100 기준")
+            hl_cards([
+                ("연환산 복리 수익률 (CAGR)", cagr_mix, "연평균 복리 수익률"),
+                ("최대 낙폭 (MDD)", f"{mdd_mix:.2f}%", "직전 고점 대비 최대 하락", "neg"),
+                ("최종 자산 가치 (NAV)", f"{final_nav_mix:.1f}", "초기금 100 기준", "neutral"),
+            ])
 
             st.markdown("##### 📈 자산 곡선 (NAV) 추이")
             chart_df_mix = bt_results_mix.copy()
@@ -3147,10 +3148,11 @@ digraph G {
             cagr_a = ((final_nav_a / 100.0) ** (1 / total_years_a) - 1) * 100
             mdd_a = bt_results_a["drawdown"].min()
 
-            bc1, bc2, bc3 = st.columns(3)
-            bc1.metric("연환산 복리 수익률 (CAGR)", f"{cagr_a:.2f}%")
-            bc2.metric("최대 낙폭 (MDD)", f"{mdd_a:.2f}%", delta_color="inverse")
-            bc3.metric("최종 자산 가치 (NAV)", f"{final_nav_a:.1f}", "초기금 100 기준")
+            hl_cards([
+                ("연환산 복리 수익률 (CAGR)", cagr_a, "연평균 복리 수익률"),
+                ("최대 낙폭 (MDD)", f"{mdd_a:.2f}%", "직전 고점 대비 최대 하락", "neg"),
+                ("최종 자산 가치 (NAV)", f"{final_nav_a:.1f}", "초기금 100 기준", "neutral"),
+            ])
 
             st.markdown("##### 📈 자산 곡선 (NAV) 추이")
             chart_df_a = bt_results_a.copy()
@@ -3636,10 +3638,11 @@ digraph G {
             cagr_b = ((final_nav_b / 100.0) ** (1 / total_years_b) - 1) * 100
             mdd_b = bt_results_b["drawdown"].min()
 
-            bbc1, bbc2, bbc3 = st.columns(3)
-            bbc1.metric("연환산 복리 수익률 (CAGR)", f"{cagr_b:.2f}%")
-            bbc2.metric("최대 낙폭 (MDD)", f"{mdd_b:.2f}%", delta_color="inverse")
-            bbc3.metric("최종 자산 가치 (NAV)", f"{final_nav_b:.1f}", "초기금 100 기준")
+            hl_cards([
+                ("연환산 복리 수익률 (CAGR)", cagr_b, "연평균 복리 수익률"),
+                ("최대 낙폭 (MDD)", f"{mdd_b:.2f}%", "직전 고점 대비 최대 하락", "neg"),
+                ("최종 자산 가치 (NAV)", f"{final_nav_b:.1f}", "초기금 100 기준", "neutral"),
+            ])
 
             st.markdown("##### 📈 자산 곡선 (NAV) 추이")
             chart_df_b = bt_results_b.copy()
@@ -4132,10 +4135,11 @@ digraph G {
             cagr_c = ((final_nav_c / 100.0) ** (1 / total_years_c) - 1) * 100
             mdd_c = bt_results_c["drawdown"].min()
 
-            bcc1, bcc2, bcc3 = st.columns(3)
-            bcc1.metric("연환산 복리 수익률 (CAGR)", f"{cagr_c:.2f}%")
-            bcc2.metric("최대 낙폭 (MDD)", f"{mdd_c:.2f}%", delta_color="inverse")
-            bcc3.metric("최종 자산 가치 (NAV)", f"{final_nav_c:.1f}", "초기금 100 기준")
+            hl_cards([
+                ("연환산 복리 수익률 (CAGR)", cagr_c, "연평균 복리 수익률"),
+                ("최대 낙폭 (MDD)", f"{mdd_c:.2f}%", "직전 고점 대비 최대 하락", "neg"),
+                ("최종 자산 가치 (NAV)", f"{final_nav_c:.1f}", "초기금 100 기준", "neutral"),
+            ])
 
             st.markdown("##### 📈 자산 곡선 (NAV) 추이")
             chart_df_c = bt_results_c.copy()
