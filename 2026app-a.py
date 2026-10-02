@@ -1795,6 +1795,8 @@ LONG_EVENTS = [
     ("2018 Q4", "2018 4분기 긴축·무역분쟁", "2018-09-01", "2018-12-31"),
     ("코로나", "2020 코로나 팬데믹", "2020-02-01", "2020-04-30"),
     ("2022 긴축", "2022 긴축 발작 (금리 인상기)", "2022-01-01", "2022-12-31"),
+    ("엔캐리", "2024 엔캐리 청산·AI 주가 조정", "2024-07-01", "2024-08-31"),
+    ("관세쇼크", "2025 美 관세 쇼크", "2025-02-01", "2025-05-31"),
 ]
 
 
@@ -1831,22 +1833,33 @@ def _fmt_dur(days):
     return f"{int(days)}일"
 
 
-def dd_episodes(px):
-    """고점 → 저점 → (전고점 회복) 낙폭 구간 목록."""
+def dd_episodes(px, min_depth=-2.0):
+    """고점 → 저점 → (전고점 회복) 낙폭 구간 목록.
+    가장 깊은 낙폭을 찾은 뒤, 그 '앞 구간'·'저점~회복 사이 구간'·'회복 이후 구간'을 다시 따로 탐색합니다.
+    그래서 전고점을 오래 못 넘은 기간 안에 있던 별도 폭락(예: 닷컴 회복 구간 중 금융위기)도 독립 구간으로 잡힙니다."""
     vals, idx = px.values, px.index
-    peak_i, trough_i, eps = 0, None, []
-    for i in range(1, len(vals)):
-        if vals[i] >= vals[peak_i]:
-            if trough_i is not None:
-                eps.append((peak_i, trough_i, i))
-                trough_i = None
-            peak_i = i
-        elif trough_i is None or vals[i] < vals[trough_i]:
-            trough_i = i
-    if trough_i is not None:
-        eps.append((peak_i, trough_i, None))
-    return [{"peak": idx[a], "trough": idx[b], "recovery": (idx[c] if c is not None else None),
-             "depth": (vals[b] / vals[a] - 1) * 100} for a, b, c in eps]
+    n = len(vals)
+    out, stack = [], [(0, n)]
+    while stack:
+        lo, hi = stack.pop()
+        if hi - lo < 3:
+            continue
+        seg = vals[lo:hi]
+        dd = seg / np.maximum.accumulate(seg) - 1
+        k = int(np.argmin(dd))
+        if dd[k] * 100 > min_depth:
+            continue
+        t = lo + k
+        pk = lo + int(np.argmax(seg[:k + 1]))
+        hit = np.nonzero(vals[t + 1:] >= vals[pk])[0]
+        r = (t + 1 + int(hit[0])) if len(hit) else None
+        out.append({"peak": idx[pk], "trough": idx[t], "recovery": (idx[r] if r is not None else None),
+                    "depth": float(dd[k] * 100)})
+        stack.append((lo, pk + 1))                           # 고점 이전 구간
+        stack.append((t, (r + 1) if r is not None else n))   # 저점 ~ 회복 사이 구간
+        if r is not None and r < hi - 1:
+            stack.append((r, hi))                            # 회복 이후 구간
+    return out
 
 
 def event_stats(px, start, end):
@@ -1867,6 +1880,135 @@ def event_stats(px, start, end):
     rebound = float((px.iloc[j + 252] / px.iloc[j] - 1) * 100) if j + 252 < len(px) else None
     return {"peak": p, "trough": t, "depth": depth,
             "recovery": (rec.index[0] if len(rec) else None), "rebound": rebound}
+
+
+NDX_INFO = {
+    "ADBE": ("어도비", "Adobe · 포토샵·PDF 등 크리에이티브·문서 소프트웨어"),
+    "AMD": ("AMD", "Advanced Micro Devices · CPU·GPU·AI 가속기 반도체"),
+    "ABNB": ("에어비앤비", "Airbnb · 숙박 공유 플랫폼"),
+    "ALNY": ("알닐람", "Alnylam Pharmaceuticals · RNA 간섭(RNAi) 치료제 바이오텍"),
+    "GOOGL": ("알파벳A", "Alphabet Class A · 구글·유튜브·클라우드 모회사(의결권 주식)"),
+    "GOOG": ("알파벳C", "Alphabet Class C · 같은 회사의 무의결권 주식"),
+    "AMZN": ("아마존", "Amazon · 전자상거래와 AWS 클라우드"),
+    "AEP": ("아메리칸일렉트릭", "American Electric Power · 미국 전력 유틸리티"),
+    "AMGN": ("암젠", "Amgen · 바이오 제약"),
+    "ADI": ("아날로그디바이시스", "Analog Devices · 아날로그·혼합신호 반도체"),
+    "AAPL": ("애플", "Apple · 아이폰·맥·서비스"),
+    "AMAT": ("어플라이드머티리얼즈", "Applied Materials · 반도체 제조 장비"),
+    "APP": ("앱러빈", "AppLovin · 모바일 광고·앱 수익화 소프트웨어"),
+    "ARM": ("암홀딩스", "Arm Holdings · CPU 설계 기술(IP) 라이선스"),
+    "ASML": ("ASML", "ASML Holding · 극자외선(EUV) 노광장비 (네덜란드)"),
+    "ALAB": ("아스테라랩스", "Astera Labs · AI 서버용 연결(커넥티비티) 반도체"),
+    "ADSK": ("오토데스크", "Autodesk · 설계·건축용 소프트웨어(AutoCAD)"),
+    "ADP": ("ADP", "Automatic Data Processing · 급여·인사 관리 서비스"),
+    "AXON": ("액손", "Axon Enterprise · 테이저·바디캠 등 공공안전 기술"),
+    "BKR": ("베이커휴즈", "Baker Hughes · 에너지 장비·서비스"),
+    "BKNG": ("부킹홀딩스", "Booking Holdings · 온라인 여행 예약(Booking.com)"),
+    "AVGO": ("브로드컴", "Broadcom · 네트워크·AI 반도체와 인프라 소프트웨어"),
+    "CDNS": ("케이던스", "Cadence Design Systems · 반도체 설계 자동화(EDA) 소프트웨어"),
+    "CTAS": ("신타스", "Cintas · 유니폼·시설 관리 서비스"),
+    "CSCO": ("시스코", "Cisco · 네트워크 장비·보안"),
+    "CCEP": ("코카콜라유로퍼시픽", "Coca-Cola Europacific Partners · 유럽·호주 코카콜라 병입·판매"),
+    "CMCSA": ("컴캐스트", "Comcast · 케이블·방송·NBC유니버설"),
+    "CEG": ("컨스텔레이션에너지", "Constellation Energy · 원자력 중심 발전"),
+    "CPRT": ("코파트", "Copart · 온라인 중고차·사고차 경매"),
+    "CRWV": ("코어위브", "CoreWeave · AI 전용 GPU 클라우드"),
+    "COST": ("코스트코", "Costco · 회원제 창고형 할인점"),
+    "CRWD": ("크라우드스트라이크", "CrowdStrike · 클라우드 사이버보안"),
+    "CSX": ("CSX", "CSX Corporation · 미국 동부 철도 운송"),
+    "DDOG": ("데이터독", "Datadog · 클라우드 모니터링 소프트웨어"),
+    "DXCM": ("덱스콤", "DexCom · 연속혈당측정기"),
+    "FANG": ("다이아몬드백", "Diamondback Energy · 셰일 원유·가스 생산"),
+    "DASH": ("도어대시", "DoorDash · 음식 배달 플랫폼"),
+    "EXC": ("엑셀론", "Exelon · 미국 전력 유틸리티"),
+    "FAST": ("패스널", "Fastenal · 산업용 체결 부품·공구 유통"),
+    "FER": ("페로비알", "Ferrovial · 고속도로·공항 등 인프라 운영"),
+    "FTNT": ("포티넷", "Fortinet · 네트워크 보안 장비"),
+    "GEHC": ("GE헬스케어", "GE HealthCare · 의료영상·진단 장비"),
+    "GILD": ("길리어드", "Gilead Sciences · 항바이러스 등 바이오 제약"),
+    "HONA": ("허니웰항공우주", "Honeywell Aerospace · 허니웰에서 분리된 항공우주 사업"),
+    "HON": ("허니웰", "Honeywell · 산업 자동화·빌딩 기술"),
+    "IDXX": ("아이덱스", "Idexx Laboratories · 동물 진단 장비"),
+    "INTC": ("인텔", "Intel · CPU와 파운드리(위탁생산)"),
+    "INTU": ("인튜이트", "Intuit · 터보택스·퀵북스 소프트웨어"),
+    "ISRG": ("인튜이티브서지컬", "Intuitive Surgical · 다빈치 수술 로봇"),
+    "KDP": ("큐리그닥터페퍼", "Keurig Dr Pepper · 음료와 커피 머신"),
+    "KLAC": ("KLA", "KLA Corporation · 반도체 검사·계측 장비"),
+    "KHC": ("크래프트하인즈", "Kraft Heinz · 가공식품"),
+    "LRCX": ("램리서치", "Lam Research · 반도체 식각·증착 장비"),
+    "LIN": ("린데", "Linde · 산업용 가스"),
+    "LITE": ("루멘텀", "Lumentum · 광통신·레이저 부품"),
+    "MAR": ("메리어트", "Marriott International · 호텔 체인"),
+    "MRVL": ("마벨", "Marvell Technology · 데이터센터·네트워크 반도체"),
+    "MELI": ("메르카도리브레", "Mercado Libre · 중남미 전자상거래·핀테크"),
+    "META": ("메타", "Meta Platforms · 페이스북·인스타그램"),
+    "MCHP": ("마이크로칩", "Microchip Technology · 마이크로컨트롤러 반도체"),
+    "MU": ("마이크론", "Micron Technology · 메모리 반도체(D램·낸드)"),
+    "MSFT": ("마이크로소프트", "Microsoft · 윈도우·오피스·애저 클라우드"),
+    "MSTR": ("스트래티지", "MicroStrategy · 비트코인을 대량 보유한 소프트웨어 기업"),
+    "MDLZ": ("몬덜리즈", "Mondelez International · 오레오 등 과자·스낵"),
+    "MPWR": ("모놀리식파워", "Monolithic Power Systems · 전력관리 반도체"),
+    "MNST": ("몬스터베버리지", "Monster Beverage · 에너지 음료"),
+    "NBIS": ("네비우스", "Nebius Group · AI 클라우드 인프라 (네덜란드)"),
+    "NFLX": ("넷플릭스", "Netflix · 동영상 스트리밍"),
+    "NVDA": ("엔비디아", "Nvidia · AI·그래픽 GPU"),
+    "NXPI": ("NXP", "NXP Semiconductors · 차량용 반도체 (네덜란드)"),
+    "ORLY": ("오라일리", "O'Reilly Automotive · 자동차 부품 소매"),
+    "ODFL": ("올드도미니언", "Old Dominion Freight Line · 화물 운송"),
+    "PCAR": ("팩카", "Paccar · 트럭 제조(켄워스·피터빌트)"),
+    "PLTR": ("팔란티어", "Palantir Technologies · 데이터 분석·AI 플랫폼"),
+    "PANW": ("팔로알토", "Palo Alto Networks · 사이버보안 플랫폼"),
+    "PAYX": ("페이첵스", "Paychex · 중소기업 급여·인사 서비스"),
+    "PYPL": ("페이팔", "PayPal · 온라인 결제"),
+    "PDD": ("PDD", "PDD Holdings · 테무·핀둬둬 운영 (중국 전자상거래)"),
+    "PEP": ("펩시코", "PepsiCo · 음료와 스낵"),
+    "QCOM": ("퀄컴", "Qualcomm · 모바일 칩과 통신 특허"),
+    "REGN": ("리제네론", "Regeneron Pharmaceuticals · 바이오 제약"),
+    "RKLB": ("로켓랩", "Rocket Lab · 소형 로켓 발사·우주 부품"),
+    "ROP": ("로퍼", "Roper Technologies · 산업·소프트웨어 지주회사"),
+    "ROST": ("로스스토어", "Ross Stores · 할인 의류 소매"),
+    "SNDK": ("샌디스크", "Sandisk · 낸드 플래시·SSD"),
+    "STX": ("시게이트", "Seagate Technology · 하드디스크 드라이브"),
+    "SHOP": ("쇼피파이", "Shopify · 온라인 쇼핑몰 구축 플랫폼"),
+    "SPCX": ("스페이스X", "SpaceX · 로켓 발사와 스타링크 위성 인터넷"),
+    "SBUX": ("스타벅스", "Starbucks · 커피 체인"),
+    "SNPS": ("시높시스", "Synopsys · 반도체 설계 자동화(EDA) 소프트웨어"),
+    "TMUS": ("티모바일", "T-Mobile US · 미국 이동통신"),
+    "TTWO": ("테이크투", "Take-Two Interactive · GTA 등 게임 퍼블리셔"),
+    "TER": ("테라다인", "Teradyne · 반도체 테스트 장비·로봇"),
+    "TSLA": ("테슬라", "Tesla · 전기차·에너지 저장장치"),
+    "TXN": ("텍사스인스트루먼트", "Texas Instruments · 아날로그 반도체"),
+    "TRI": ("톰슨로이터", "Thomson Reuters · 뉴스·법률 정보 서비스"),
+    "VRTX": ("버텍스", "Vertex Pharmaceuticals · 낭포성 섬유증 등 바이오 제약"),
+    "WMT": ("월마트", "Walmart · 대형 할인점"),
+    "WBD": ("워너브라더스", "Warner Bros. Discovery · 미디어·HBO 스트리밍"),
+    "WDC": ("웨스턴디지털", "Western Digital · 하드디스크 드라이브"),
+    "WDAY": ("워크데이", "Workday · 인사·재무 클라우드 소프트웨어"),
+    "XEL": ("엑셀에너지", "Xcel Energy · 미국 중서부 전력 유틸리티"),
+}
+for _k, _v in NDX_INFO.items():
+    TICKER_INFO.setdefault(_k, _v)  # 용어 사전(GLOSSARY) 생성 이후에 추가하므로 본문 자동 밑줄에는 영향 없음
+NDX_FALLBACK = list(NDX_INFO)  # 위키피디아 자동 갱신 실패 시 쓰는 내장 구성 종목 목록
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def get_ndx_tickers():
+    """나스닥100 구성 종목: 위키피디아 표에서 자동 갱신하고, 실패하면 내장 목록을 사용합니다."""
+    try:
+        import requests
+        from io import StringIO
+        r = requests.get("https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies",
+                         headers={"User-Agent": "Mozilla/5.0 (asset-allocation-dashboard)"}, timeout=10)
+        r.raise_for_status()
+        for t in pd.read_html(StringIO(r.text)):
+            if "Ticker" in [str(c) for c in t.columns]:
+                tick = [str(x).strip().replace(".", "-") for x in t["Ticker"].dropna().tolist()]
+                tick = [x for x in tick if x and x.replace("-", "").isalnum()]
+                if 90 <= len(tick) <= 110:
+                    return list(dict.fromkeys(tick)), "auto"
+    except Exception:
+        pass
+    return list(NDX_FALLBACK), "fallback"
 
 
 def render_gl_table(df):
@@ -2166,12 +2308,13 @@ else:
     realtime_dy = get_sp500_dividend_yield()
     is_attack_c = realtime_dy > 1.33
     
-    tab_2026, tab_a, tab_b, tab_c, tab_rank, tab_mdd, tab_calc = st.tabs([
+    tab_2026, tab_a, tab_b, tab_c, tab_rank, tab_ndx, tab_mdd, tab_calc = st.tabs([
         "🏆 2026 혼합전략", 
         "🛡️ 전략 A", 
         "⚡ 전략 B", 
         "🔄 전략 C",
         "🇺🇸 미국 ETF 랭킹",
+        "🏢 나스닥100 랭킹",
         "📉 장기 낙폭",
         "🧮 자산 계산기"
     ])
@@ -2286,6 +2429,8 @@ else:
         c_c = st.container()
     with tab_rank:
         c_rank = st.container()
+    with tab_ndx:
+        c_ndx = st.container()
     with tab_mdd:
         c_mdd = st.container()
     with tab_calc:
@@ -4773,8 +4918,8 @@ digraph G {
         df_ranking = df_ranking.sort_values(by=selected_sort_col, ascending=False).reset_index(drop=True)
         df_ranking.index += 1
         
-        st.markdown(f"### 📊 Top 5 Performers ({sort_by} 기준)")
-        df_top5 = df_ranking.head(5).copy()
+        st.markdown(f"### 📊 Top 10 Performers ({sort_by} 기준)")
+        df_top5 = df_ranking.head(10).copy()
         
         try:
             import altair as alt
@@ -4783,7 +4928,7 @@ digraph G {
                 y=alt.Y("티커 (Ticker):N", sort='-x', title="ETF 티커"),
                 color=alt.Color("티커 (Ticker):N", scale=alt.Scale(scheme='tableau10'), legend=None),
                 tooltip=["티커 (Ticker)", "현재가 ($)", selected_sort_col]
-            ).properties(height=200)
+            ).properties(height=340)
             st.altair_chart(top_chart, use_container_width=True)
         except Exception:
             st.bar_chart(df_top5.set_index("티커 (Ticker)")[selected_sort_col])
@@ -4793,6 +4938,75 @@ digraph G {
         _rk.insert(0, "순위", _rk.index)
         render_html_table(_rk, ticker_cols=("티커 (Ticker)",))
         st.caption("※ 티커 옆 괄호는 ETF의 한글 명칭이며, 티커에 마우스를 올리면 간략 설명이 표시됩니다. 점수·수익률 단위는 %입니다.")
+
+    with c_ndx:
+        st.header("🏢 실시간 미국 나스닥100 랭킹")
+        st.markdown(
+            "나스닥100 구성 종목들의 실시간 모멘텀과 수익률을 역동적으로 추적하여 정렬하는 "
+            "멀티-팩터 랭킹입니다. 상위 20개만 표시합니다."
+        )
+
+        ndx_sort_by = st.radio(
+            "🏆 정렬 기준 선택",
+            options=["종합 모멘텀 스코어", "1개월 수익률", "3개월 수익률", "6개월 수익률", "12개월 수익률"],
+            horizontal=True,
+            key="ndx_sort_by_radio"
+        )
+
+        _ndx_list, _ndx_src = get_ndx_tickers()
+        with st.spinner("나스닥100 구성 종목 데이터를 집계 중..."):
+            _ndx_raw = get_all_financial_data_v2(_ndx_list)
+
+        if _ndx_raw is None or _ndx_raw.empty:
+            st.warning("나스닥100 종목 데이터를 불러오지 못했습니다. 잠시 후 새로고침해 주세요.")
+        else:
+            ndx_rows = []
+            for _, _r in _ndx_raw.iterrows():
+                ndx_rows.append({
+                    "티커 (Ticker)": _r["Ticker"],
+                    "현재가 ($)": f"${_r['현재가']:.2f}",
+                    "종합 모멘텀 스코어": _r["A_공격스코어"],
+                    "1개월 수익률 (%)": _r["1M"],
+                    "3개월 수익률 (%)": _r["3M"],
+                    "6개월 수익률 (%)": _r["6M"],
+                    "12개월 수익률 (%)": _r["12M"],
+                })
+            df_ndx = pd.DataFrame(ndx_rows)
+            _ndx_sort_map = {
+                "종합 모멘텀 스코어": "종합 모멘텀 스코어",
+                "1개월 수익률": "1개월 수익률 (%)",
+                "3개월 수익률": "3개월 수익률 (%)",
+                "6개월 수익률": "6개월 수익률 (%)",
+                "12개월 수익률": "12개월 수익률 (%)",
+            }
+            _ndx_col = _ndx_sort_map[ndx_sort_by]
+            df_ndx = df_ndx.sort_values(by=_ndx_col, ascending=False).reset_index(drop=True)
+            df_ndx.index += 1
+
+            st.markdown(f"### 📊 Top 10 Performers ({ndx_sort_by} 기준)")
+            df_ndx_top5 = df_ndx.head(10).copy()
+            try:
+                import altair as alt
+                ndx_chart = alt.Chart(df_ndx_top5).mark_bar(cornerRadiusEnd=6).encode(
+                    x=alt.X(f"{_ndx_col}:Q", title=ndx_sort_by),
+                    y=alt.Y("티커 (Ticker):N", sort='-x', title="종목 티커"),
+                    color=alt.Color("티커 (Ticker):N", scale=alt.Scale(scheme='tableau10'), legend=None),
+                    tooltip=["티커 (Ticker)", "현재가 ($)", _ndx_col]
+                ).properties(height=340)
+                st.altair_chart(ndx_chart, use_container_width=True)
+            except Exception:
+                st.bar_chart(df_ndx_top5.set_index("티커 (Ticker)")[_ndx_col])
+
+            st.markdown("### 🏆 실시간 모멘텀 순위표 (상위 20)")
+            _ndx_rk = df_ndx.head(20).copy()
+            _ndx_rk.insert(0, "순위", _ndx_rk.index)
+            render_html_table(_ndx_rk, ticker_cols=("티커 (Ticker)",))
+            st.caption(
+                f"※ 나스닥100 구성 종목 {len(_ndx_list)}개 중 데이터가 확보된 {len(df_ndx)}개를 비교해 상위 20개만 표시합니다 "
+                "(상장 12개월 미만 종목은 제외). 티커 옆 괄호는 한글 회사명이며, 티커에 마우스를 올리거나(폰은 터치) 간략 설명이 표시됩니다. "
+                "점수·수익률 단위는 %이고, 점수 산식은 ETF 랭킹과 같습니다."
+                + (" 구성 종목은 하루 한 번 위키피디아 표에서 자동 갱신합니다." if _ndx_src == "auto" else " 구성 종목은 내장 목록(2026-10 기준)을 사용 중입니다.")
+            )
 
     with c_mdd:
         import altair as alt
@@ -4894,7 +5108,7 @@ digraph G {
                 })
             if top_rows:
                 st.dataframe(pd.DataFrame(top_rows), use_container_width=True, hide_index=True)
-                st.caption("※ 고점 → 저점 → 전고점 회복까지를 한 구간으로 봅니다. '전고점 회복'은 저점에서 직전 고점을 다시 넘기까지 걸린 시간입니다.")
+                st.caption("※ 고점 → 저점 → 전고점 회복까지를 한 구간으로 봅니다. 전고점을 오래 못 넘은 기간 안의 별도 폭락(예: 닷컴 회복 중 금융위기)도 각각 독립 구간으로 집계합니다. '전고점 회복'은 저점에서 그 구간의 고점을 다시 넘기까지 걸린 시간입니다.")
 
             # ---- 폭락 시장 성과 ----
             st.markdown("##### 🔻 폭락 시장 성과 (대형 이슈별)")
