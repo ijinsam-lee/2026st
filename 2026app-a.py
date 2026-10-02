@@ -1299,14 +1299,15 @@ def render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="mix"):
     if is_mix:
         room = last_cum - stop_pct
         hit = cum_pct[cum_pct <= stop_pct]
-        m1, m2, m3, m4 = st.columns(4)
-    else:
-        m1, m2, m3 = st.columns(3)
-    m1.metric("월초 대비 누적", f"{last_cum:+.2f}%")
-    m2.metric(f"최근일 ({cum_pct.index[-1].strftime('%m/%d')})", f"{last_daily:+.2f}%")
-    m3.metric("이번 달 최저 누적", f"{worst_cum:+.2f}%")
+    cards = [
+        ("월초 대비 누적 (이번 달 복리)", last_cum, "전월 말 종가 대비"),
+        (f"최근일 ({cum_pct.index[-1].strftime('%m/%d')}) 일간 수익률", last_daily, "전일 대비"),
+        ("이번 달 최저 누적", worst_cum, "월중 가장 낮았던 누적"),
+    ]
     if is_mix:
-        m4.metric("하드스탑까지 여유", f"{room:+.2f}%p")
+        cards.append(("하드스탑까지 여유", f"{room:+.2f}%p", f"임계치 {stop_pct:.1f}%", "neg" if room <= 2.0 else "pos"))
+    hl_cards(cards)
+    if is_mix:
         st.caption(
             f"월초 대비 누적 {last_cum:+.2f}% = "
             f"A {part_cum_pct['A'].iloc[-1]:+.2f}%p + B {part_cum_pct['B'].iloc[-1]:+.2f}%p + C {part_cum_pct['C'].iloc[-1]:+.2f}%p  ·  "
@@ -1573,6 +1574,69 @@ st.markdown("<style>.gl{border-bottom:1px dotted #64748b;cursor:help;-webkit-tap
             unsafe_allow_html=True)
 
 
+# ===================== 핵심 수치 강조 (비중 칩 · 일별/월별 복리 수익 카드) =====================
+st.markdown("""<style>
+.hl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin:0.3rem 0 0.7rem}
+.hl-card{border-radius:12px;padding:10px 12px;border:2px solid #3b82f6;background:#eff6ff;color:#1d4ed8}
+.hl-card.pos{border-color:#10b981;background:#ecfdf5;color:#047857}
+.hl-card.neg{border-color:#ef4444;background:#fef2f2;color:#b91c1c}
+.hl-card .hl-l{font-size:0.78rem;font-weight:700;color:#334155;word-break:keep-all}
+.hl-card .hl-v{font-size:1.6rem;font-weight:800;line-height:1.25}
+.hl-card .hl-s{font-size:0.72rem;color:#64748b;word-break:keep-all}
+.al-wrap{display:flex;flex-wrap:wrap;gap:8px;margin:0.3rem 0 0.6rem}
+.al-chip{flex:1 1 140px;border-radius:12px;padding:10px 12px;background:#fff;border:1px solid #e2e8f0;border-left:8px solid #3b82f6;box-shadow:0 1px 3px rgba(15,23,42,.08)}
+.al-chip .al-t{font-size:1.15rem;font-weight:800;color:#0f172a}
+.al-chip .al-n{font-size:0.78rem;color:#64748b;margin-left:4px}
+.al-chip .al-w{font-size:1.7rem;font-weight:800;line-height:1.2;color:#0f172a}
+</style>""", unsafe_allow_html=True)
+
+
+def hl_cards(items):
+    """items: [(라벨, 숫자 또는 문자열, 부가설명, 'auto'|'pos'|'neg'|'neutral'), ...] -> 큼직한 강조 카드."""
+    html = ""
+    for label, val, sub, *rest in items:
+        tone = rest[0] if rest else "auto"
+        if isinstance(val, (int, float, np.floating)):
+            if tone == "auto":
+                tone = "pos" if val > 0 else ("neg" if val < 0 else "neutral")
+            val = f"{val:+.2f}%"
+        cls = {"pos": " pos", "neg": " neg"}.get(tone, "")
+        html += (f'<div class="hl-card{cls}"><div class="hl-l">{_html.escape(label)}</div>'
+                 f'<div class="hl-v">{_html.escape(str(val))}</div><div class="hl-s">{_html.escape(sub)}</div></div>')
+    st.markdown(f'<div class="hl-grid">{html}</div>', unsafe_allow_html=True)
+
+
+def monthly_compound_cards(bt):
+    """월별 수익률 위에 이번 달 / 올해(YTD) / 최근 12개월 복리 수익을 크게 표시."""
+    try:
+        r = bt["monthly_return"].astype(float).values / 100.0
+        d = pd.to_datetime(bt["date"])
+        last = d.iloc[-1]
+        ytd = (np.prod(1 + r[(d.dt.year == last.year).values]) - 1) * 100
+        items = [(f"이번 달 ({last.strftime('%Y-%m')})", r[-1] * 100, "월 수익률"),
+                 ("올해 복리 수익 (YTD)", ytd, "월 수익률을 연초부터 복리로 누적")]
+        if len(r) >= 12:
+            items.append(("최근 12개월 복리", (np.prod(1 + r[-12:]) - 1) * 100, "최근 1년 복리 누적"))
+        hl_cards(items)
+    except Exception:
+        pass
+
+
+def render_alloc_chips(df, ticker_col="자산군 (Ticker)", weight_col="배분 비중 (%)",
+                       colors=("#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#06b6d4", "#f97316")):
+    """포트폴리오 자산군과 비중을 도넛 색과 같은 색의 큰 칩으로 강조."""
+    chips = ""
+    for i, (_, r) in enumerate(df.iterrows()):
+        try:
+            w = f"{float(r[weight_col]):,.2f}%"
+        except Exception:
+            w = str(r[weight_col])
+        chips += (f'<div class="al-chip" style="border-left-color:{colors[i % len(colors)]}">'
+                  f'<div><span class="al-t">{ticker_cell_html(r[ticker_col], show_name=False)}</span></div>'
+                  f'<div class="al-w">{_html.escape(w)}</div></div>')
+    st.markdown(f'<div class="al-wrap">{chips}</div>', unsafe_allow_html=True)
+
+
 def render_gl_table(df):
     """지표 표: 첫 열(지표명)의 용어에 설명을 붙인 HTML 표 (스크롤 없이 전체 표시)."""
     head = "".join(f"<th>{_html.escape(str(c))}</th>" for c in df.columns)
@@ -1637,7 +1701,7 @@ def render_alloc_table(df):
     for _, r in df.iterrows():
         cells = f'<td class="l">{ticker_cell_html(r["자산군"])}</td>'
         cells += f'<td>{_html.escape(str(r["현재가 ($)"]))}</td>'
-        cells += f'<td><b>{float(r["배분 비중 (%)"]):,.2f}</b></td>'
+        cells += f'<td class="wt">{float(r["배분 비중 (%)"]):,.2f}%</td>'
         for c in ("1M", "3M", "6M", "12M"):
             sv = str(r[c])
             neg = sv.startswith("-") and len(sv) > 1 and sv[1].isdigit()
@@ -1649,7 +1713,9 @@ def render_alloc_table(df):
         body += f'<tr class="main">{cells}</tr><tr class="detail"><td colspan="{len(num_cols)}" class="t">{detail}</td></tr>'
     st.markdown(
         _TBL_CSS
-        + "<style>.dtbl tr.detail td{background:#f1f5f9;color:#334155;font-size:0.92em;line-height:1.45}"
+        + "<style>.dtbl td.wt{background:#fef9c3 !important;font-size:1.15em;font-weight:800;color:#0f172a}"
+        + ".dtbl td.l .tk{font-size:1.15em;color:#0f172a}.dtbl td.l .tk-name{display:block;margin-left:0}"
+        + ".dtbl tr.detail td{background:#f1f5f9;color:#334155;font-size:0.92em;line-height:1.45}"
         + ".dtbl tr.main td{border-bottom:none}.dtbl tr.detail td{border-top:none}</style>"
         + f'<table class="dtbl"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>',
         unsafe_allow_html=True,
@@ -2322,6 +2388,7 @@ digraph G {
         c_sig3.metric("전략C (배당수익률)", f"{realtime_dy:.2f}%", "공격" if is_attack_c else "방어", delta_color="inverse" if not is_attack_c else "normal")
 
         st.markdown("### 📊 포트폴리오 비중 분배 현황")
+        render_alloc_chips(df_mix)
         chart_col = st.container()
 
         with chart_col:
@@ -2343,10 +2410,10 @@ digraph G {
                         legend=alt.Legend(
                             orient="bottom",
                             title=None,
-                            labelFontSize=11.5,
+                            labelFontSize=15,
                             labelFontWeight="bold",
                             symbolType="circle",
-                            symbolSize=110,
+                            symbolSize=220,
                             columns=2,
                             labelColor="#1e293b",
                             padding=15
@@ -2365,7 +2432,7 @@ digraph G {
                 st.bar_chart(df_mix.set_index("자산군 (Ticker)")["배분 비중 (%)"])
         
         render_alloc_table(df_mix_view)
-        st.caption("※ 자산군에 마우스를 올리면 ETF 설명이 표시됩니다. 선택 기준·값: 각 전략이 해당 자산을 고른 이유와 스코어입니다. 1M·3M·6M·12M은 해당 자산의 기간별 수익률입니다. 배분 비중은 전체 자산 대비 %입니다.")
+        st.caption("※ 자산군에 마우스를 올리거나(폰은 터치) ETF 설명이 표시됩니다. 선택 기준·값: 각 전략이 해당 자산을 고른 이유와 스코어입니다. 1M·3M·6M·12M은 해당 자산의 기간별 수익률입니다. 배분 비중은 전체 자산 대비 %입니다.")
 
         st.markdown("### 💰 실시간 리밸런싱 목표 수량 계산기")
         st.markdown("현재 환율과 실시간 주가를 기반으로, 설정한 원화 예산에 필요한 **자산별 목표 환전 달러** 및 **실제 매수 주수**를 계산해 드립니다.")
@@ -2640,6 +2707,7 @@ digraph G {
             # ------------------------------------------------------------
             # 월별 수익률 (Monthly Returns) — 히트맵 테이블
             # ------------------------------------------------------------
+            monthly_compound_cards(bt_results_mix)
             st.markdown("##### 🗓️ 월별 수익률 (%)")
             monthly_df_mix = bt_results_mix.copy()
             monthly_df_mix["year"] = monthly_df_mix["date"].dt.year
@@ -3175,6 +3243,7 @@ digraph G {
             # ------------------------------------------------------------
             # 월별 수익률 (Monthly Returns) — 히트맵 테이블
             # ------------------------------------------------------------
+            monthly_compound_cards(bt_results_a)
             st.markdown("##### 🗓️ 월별 수익률 (%)")
             monthly_df_a = bt_results_a.copy()
             monthly_df_a["year"] = monthly_df_a["date"].dt.year
@@ -3663,6 +3732,7 @@ digraph G {
             # ------------------------------------------------------------
             # 월별 수익률 (Monthly Returns) — 히트맵 테이블
             # ------------------------------------------------------------
+            monthly_compound_cards(bt_results_b)
             st.markdown("##### 🗓️ 월별 수익률 (%)")
             monthly_df_b = bt_results_b.copy()
             monthly_df_b["year"] = monthly_df_b["date"].dt.year
@@ -4158,6 +4228,7 @@ digraph G {
             # ------------------------------------------------------------
             # 월별 수익률 (Monthly Returns) — 히트맵 테이블
             # ------------------------------------------------------------
+            monthly_compound_cards(bt_results_c)
             st.markdown("##### 🗓️ 월별 수익률 (%)")
             monthly_df_c = bt_results_c.copy()
             monthly_df_c["year"] = monthly_df_c["date"].dt.year
