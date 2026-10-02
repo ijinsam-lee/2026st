@@ -1460,14 +1460,134 @@ TICKER_INFO = {
 
 
 def ticker_cell_html(t, show_name=True):
-    """티커 + (한글명) + 마우스 오버 설명(title)."""
+    """티커 + (한글명) + 마우스 오버/터치 설명(data-tip)."""
     info = TICKER_INFO.get(str(t))
     if not info:
         return _html.escape(str(t))
     short, desc = info
     tip = _html.escape(f"{t} · {short}\n{desc}", quote=True).replace("\n", "&#10;")
     name = f'<span class="tk-name">({_html.escape(short)})</span>' if show_name else ""
-    return f'<span class="tk" title="{tip}">{_html.escape(str(t))}</span>{name}'
+    return f'<span class="tk gl" data-tip="{tip}">{_html.escape(str(t))}</span>{name}'
+
+
+# ===================== 용어 설명 (마우스 오버 / 폰 터치) =====================
+import re as _re
+from streamlit.delta_generator import DeltaGenerator as _DG
+
+GL_TICKERS_IN_TEXT = True  # 본문 속 티커에도 설명을 붙이려면 True, 끄려면 False
+
+_GL_DEFS = [
+    (("^TNX", "TNX"), "미국 10년물 국채 금리. 주식 가치평가와 기업 차입금리의 기준이 되는 무위험 수익률 지표"),
+    (("^TYX", "TYX"), "미국 30년물 국채 금리. 초장기 인플레이션·경제성장 기대를 반영하는 장기금리 지표"),
+    (("USDKRW=X",), "달러/원 환율. 해외 ETF 환전 매수와 환노출 성과에 직접 영향"),
+    (("DX-Y.NYB",), "달러 인덱스. 유로·엔·파운드 등 주요 6개 통화 대비 달러의 상대 가치"),
+    (("CL=F",), "WTI 원유 선물 가격. 국제 유가와 생산자 물가 압력을 나타냄"),
+    (("^VIX", "VIX"), "변동성 지수(공포 지수). S&P500 옵션 가격으로 산출한 시장의 기대 변동성"),
+    (("SPY 배당수익률", "배당수익률"), "S&P500의 주가 대비 배당금 비율. 전략 C에서 과열·저평가를 판단하는 카나리아 지표(1.33% 기준선)"),
+    (("카나리아 신호", "카나리아"), "탄광의 카나리아처럼 하락 위험을 미리 알려주는 선행 경고 지표 (TIP 이동평균·모멘텀, S&P500 배당수익률)"),
+    (("모멘텀 스코어",), "과거 1·3·6·12개월 수익률로 계산한 추세 강도. 최근 기간에 가중치를 주기도 함"),
+    (("NAV",), "순자산가치. 시작 시점을 100으로 두고 누적 복리 수익을 반영한 자산 곡선 값"),
+    (("CAGR",), "연평균 복리 수익률. 전체 기간 성과를 매년 일정 비율로 복리 성장한 것으로 환산한 값"),
+    (("MDD",), "최대 낙폭. 직전 고점 대비 가장 크게 떨어진 하락률 = 감내해야 할 최대 손실 위험"),
+    (("샤프 지수",), "변동성(위험) 한 단위당 얻은 초과수익. 높을수록 위험 대비 효율이 좋음"),
+    (("소티노 지수",), "손실이 난 '하방 변동성'만 위험으로 보고 계산한 위험조정 수익 지표"),
+    (("UPI 지수",), "Ulcer Performance Index. 낙폭의 깊이와 지속기간을 반영한 위험 대비 수익률"),
+    (("연간 턴오버", "턴오버"), "1년 동안 포트폴리오 자산이 교체된 비중의 합(회전율). 높을수록 거래비용·슬리피지 증가"),
+    (("비중 상한",), "여러 전략이 같은 자산을 고를 때 한 자산에 쏠리지 않게 정한 한도(예: 35%). 초과분은 현금 전환"),
+    (("월중 하드스탑", "하드스탑"), "월말 리밸런싱을 기다리지 않고, 월중 누적 손실이 기준(예: -7%)에 닿으면 즉시 전량 현금화하는 규칙"),
+    (("연 변동성",), "수익률의 표준편차를 연 단위로 환산한 값. 클수록 등락이 심함"),
+    (("표준편차",), "수익률이 평균에서 흩어진 정도. 클수록 변동이 큼"),
+    (("YTD",), "Year-To-Date. 올해 1월 1일부터 현재까지의 누적 수익률"),
+    (("슬리피지",), "주문 예상가와 실제 체결가의 차이로 생기는 숨은 거래비용"),
+]
+GLOSSARY = {}
+for _keys, _d in _GL_DEFS:
+    for _k in _keys:
+        GLOSSARY[_k] = _d
+if GL_TICKERS_IN_TEXT:
+    for _t, (_s, _d) in TICKER_INFO.items():
+        GLOSSARY.setdefault(_t, f"{_t} ({_s}) — {_d}".replace("|", "/"))
+_GL_RE = _re.compile(
+    r"(?<![A-Za-z0-9_^])(?:" + "|".join(_re.escape(k) for k in sorted(GLOSSARY, key=len, reverse=True)) + r")(?![A-Za-z0-9_])"
+)
+_GL_SPLIT = _re.compile(r"(</?[A-Za-z][^>]*>|`[^`]*`)")
+
+
+def glossify(text):
+    """글 속 용어를 <span class="gl" data-tip=...>로 감쌉니다 (태그·코드·스타일 블록 안은 건드리지 않음)."""
+    if "<style" in text or "```" in text:
+        return text
+    out, skip = [], False
+    for part in _GL_SPLIT.split(text):
+        if part.startswith("<") or part.startswith("`"):
+            if _re.search(r'class="[^"]*\bgl\b', part):
+                skip = True
+            elif part == "</span>" and skip:
+                skip = False
+            out.append(part)
+        elif skip:
+            out.append(part)
+        else:
+            out.append(_GL_RE.sub(
+                lambda m: f'<span class="gl" data-tip="{_html.escape(GLOSSARY[m.group(0)], quote=True)}">{m.group(0)}</span>', part))
+    return "".join(out)
+
+
+def _gl_patch(owner, name, handler):
+    cur = getattr(owner, name)
+    orig = getattr(cur, "_gl_orig", cur)  # 재실행해도 겹겹이 감싸지지 않도록 원본 기준으로 교체
+
+    def f(*args, **k):
+        i = 1 if args and isinstance(args[0], _DG) else 0
+        return handler(orig, args, k, i)
+    f._gl_orig = orig
+    setattr(owner, name, f)
+
+
+def _h_text(orig, args, k, i):
+    if len(args) > i and isinstance(args[i], str):
+        new = glossify(args[i])
+        if new != args[i]:
+            args = args[:i] + (new,) + args[i + 1:]
+            k["unsafe_allow_html"] = True
+    return orig(*args, **k)
+
+
+def _h_metric(orig, args, k, i):
+    """st.metric 라벨에 용어가 있으면 ⓘ 도움말 아이콘(터치 가능)을 자동으로 붙입니다."""
+    if "help" not in k and i < len(args) <= i + 4 and isinstance(args[i], str):
+        seen = []
+        for m in _GL_RE.finditer(args[i]):
+            if m.group(0) not in seen:
+                seen.append(m.group(0))
+        if seen:
+            k["help"] = "\n\n".join(f"**{x}** — {GLOSSARY[x]}" for x in seen)
+    return orig(*args, **k)
+
+
+for _o in (st, _DG):
+    for _n, _h in (("markdown", _h_text), ("caption", _h_text), ("metric", _h_metric)):
+        _gl_patch(_o, _n, _h)
+
+st.markdown("<style>.gl{border-bottom:1px dotted #64748b;cursor:help;-webkit-tap-highlight-color:transparent}</style>",
+            unsafe_allow_html=True)
+
+
+def render_gl_table(df):
+    """지표 표: 첫 열(지표명)의 용어에 설명을 붙인 HTML 표 (스크롤 없이 전체 표시)."""
+    head = "".join(f"<th>{_html.escape(str(c))}</th>" for c in df.columns)
+    body = ""
+    for _, row in df.iterrows():
+        cells = ""
+        for j, c in enumerate(df.columns):
+            sv = str(row[c])
+            if j == 0:
+                cells += f'<td class="l">{glossify(_html.escape(sv))}</td>'
+            else:
+                neg = sv.startswith("-") and len(sv) > 1 and sv[1].isdigit()
+                cells += f'<td class="{"neg" if neg else ""}">{_html.escape(sv)}</td>'
+        body += f"<tr>{cells}</tr>"
+    st.markdown(f'{_TBL_CSS}<table class="dtbl"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>', unsafe_allow_html=True)
 
 
 _TBL_CSS = (
@@ -1757,6 +1877,48 @@ else:
         "🧮 자산 계산기"
     ])
 
+
+    # 용어 설명 팝업: 마우스는 올리면, 폰은 탭하면 표시 (다른 곳을 탭하면 닫힘)
+    components.html("""
+<script>
+(function () {
+  var win = window.parent, doc = win.document;
+  try { if (win.__glOff) { win.__glOff(); } } catch (e) {}
+  var pop = doc.getElementById('gl-pop');
+  if (!pop) {
+    pop = doc.createElement('div'); pop.id = 'gl-pop';
+    pop.style.cssText = 'position:fixed;z-index:100000;display:none;background:#1e293b;color:#f8fafc;padding:8px 10px;border-radius:8px;font-size:13px;line-height:1.5;font-weight:400;white-space:pre-line;word-break:keep-all;box-shadow:0 6px 18px rgba(15,23,42,.35);pointer-events:none;';
+    doc.body.appendChild(pop);
+  }
+  var cur = null, ptype = 'mouse';
+  function tgt(e) { return e.target && e.target.closest ? e.target.closest('.gl') : null; }
+  function show(el) {
+    var t = el.getAttribute('data-tip'); if (!t) { return; }
+    pop.textContent = t; pop.style.display = 'block';
+    pop.style.maxWidth = Math.min(280, win.innerWidth - 16) + 'px';
+    var r = el.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+    var x = Math.max(8, Math.min(r.left, win.innerWidth - w - 8));
+    var y = r.bottom + 6; if (y + h > win.innerHeight - 8) { y = Math.max(8, r.top - h - 6); }
+    pop.style.left = x + 'px'; pop.style.top = y + 'px'; cur = el;
+  }
+  function hide() { pop.style.display = 'none'; cur = null; }
+  function onDown(e) { ptype = e.pointerType || 'mouse'; if (!tgt(e)) { hide(); } }
+  function onOver(e) { if (ptype !== 'mouse') { return; } var el = tgt(e); if (el) { show(el); } }
+  function onOut(e) { if (ptype !== 'mouse') { return; } if (tgt(e)) { hide(); } }
+  function onClick(e) { if (ptype === 'mouse') { return; } var el = tgt(e); if (!el) { return; } if (cur === el) { hide(); } else { show(el); } }
+  doc.addEventListener('pointerdown', onDown, true);
+  doc.addEventListener('mouseover', onOver, true);
+  doc.addEventListener('mouseout', onOut, true);
+  doc.addEventListener('click', onClick, true);
+  win.addEventListener('scroll', hide, true);
+  win.__glOff = function () {
+    doc.removeEventListener('pointerdown', onDown, true); doc.removeEventListener('mouseover', onOver, true);
+    doc.removeEventListener('mouseout', onOut, true); doc.removeEventListener('click', onClick, true);
+    win.removeEventListener('scroll', hide, true);
+  };
+})();
+</script>
+""", height=0)
 
     # 스크롤해도 전략 탭 메뉴(혼합전략/A/B/C/ETF 랭킹/자산 계산기)가 화면 상단에 고정되도록 함
     components.html("""
@@ -2719,7 +2881,7 @@ digraph G {
                 ("연간 턴오버", f"{annual_turnover_mix:.1f}%", "0.0%"),
             ]
             df_metrics_mix = pd.DataFrame(metrics_rows_mix, columns=["지표", "2026 혼합전략", "QQQ"])
-            st.dataframe(df_metrics_mix, use_container_width=True, hide_index=True, height=(len(df_metrics_mix) + 1) * 35 + 3)
+            render_gl_table(df_metrics_mix)
             st.caption(f"※ 기간: {bt_results_mix['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_mix['date'].iloc[-1].strftime('%Y-%m')} 야후 파이낸스 실시간 데이터 기준. 1/3/5년 지표는 해당 기간의 월 데이터가 충분할 때만 표시됩니다.")
 
 
@@ -3238,7 +3400,7 @@ digraph G {
                 ("연간 턴오버", f"{annual_turnover_a:.1f}%", "0.0%"),
             ]
             df_metrics_a = pd.DataFrame(metrics_rows_a, columns=["지표", "전략A", "QQQ"])
-            st.dataframe(df_metrics_a, use_container_width=True, hide_index=True, height=(len(df_metrics_a) + 1) * 35 + 3)
+            render_gl_table(df_metrics_a)
             st.caption(f"※ 기간: {bt_results_a['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_a['date'].iloc[-1].strftime('%Y-%m')} 야후 파이낸스 실시간 데이터 기준. 1/3/5년 지표는 해당 기간의 월 데이터가 충분할 때만 표시됩니다.")
 
 
@@ -3726,7 +3888,7 @@ digraph G {
                 ("연간 턴오버", f"{annual_turnover_b:.1f}%", "0.0%"),
             ]
             df_metrics_b = pd.DataFrame(metrics_rows_b, columns=["지표", "전략B", "QQQ"])
-            st.dataframe(df_metrics_b, use_container_width=True, hide_index=True, height=(len(df_metrics_b) + 1) * 35 + 3)
+            render_gl_table(df_metrics_b)
             st.caption(f"※ 기간: {bt_results_b['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_b['date'].iloc[-1].strftime('%Y-%m')} 야후 파이낸스 실시간 데이터 기준. 1/3/5년 지표는 해당 기간의 월 데이터가 충분할 때만 표시됩니다.")
 
 
@@ -4221,7 +4383,7 @@ digraph G {
                 ("연간 턴오버", f"{annual_turnover_c:.1f}%", "0.0%"),
             ]
             df_metrics_c = pd.DataFrame(metrics_rows_c, columns=["지표", "전략C", "QQQ"])
-            st.dataframe(df_metrics_c, use_container_width=True, hide_index=True, height=(len(df_metrics_c) + 1) * 35 + 3)
+            render_gl_table(df_metrics_c)
             st.caption(f"※ 기간: {bt_results_c['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_c['date'].iloc[-1].strftime('%Y-%m')} 야후 파이낸스 실시간 데이터 기준. 1/3/5년 지표는 해당 기간의 월 데이터가 충분할 때만 표시됩니다.")
 
 
