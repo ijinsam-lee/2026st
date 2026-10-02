@@ -16,37 +16,71 @@ st.markdown("""
     background-color: #f8fafc;
 }
 
-/* 상단 탭 메뉴(전략 선택 영역)를 프리미엄 그레이 세그먼트 컨트롤러로 강조 */
+/* ── 상단 탭 메뉴: 2줄 구성 ──
+   위줄 = 영문 그룹 라벨(STRATEGY / INSIGHTS), 아래줄 = 탭. 탭 사이 틈 없이 색으로만 구분합니다.
+   (그룹 라벨·data-grp 속성은 아래 탭 고정용 JS가 만들어 줍니다. 앞 4개 탭 = 전략, 나머지 = 정보) */
 .stTabs [data-baseweb="tab-list"] {
-    background-color: #e2e8f0 !important; /* 차분하고 정돈된 미디엄 그레이 배경 */
-    border: 1px solid #cbd5e1 !important;
-    border-radius: 12px !important;
-    padding: 5px !important;
-    gap: 4px !important;
-    box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.06), 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important;
+    background-color: transparent !important;
+    box-shadow: none !important;
     margin-bottom: 20px !important;
 }
+.stTabs div.tab-grid {
+    display: grid !important;
+    grid-template-columns: repeat(8, minmax(max-content, 1fr)) !important; /* 탭 개수(8)와 맞춰야 합니다 */
+    grid-auto-flow: row !important;
+    gap: 0 !important;
+    column-gap: 0 !important;
+    row-gap: 0 !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+    padding: 0 !important;
+    background-color: transparent !important;
+    border: 1px solid #94a3b8 !important;
+    border-radius: 0 !important;  /* 모서리 라운드 없음(사각) */
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important;
+}
+.stTabs .tab-grp-label {
+    grid-row: 1;
+    display: block;
+    text-align: center;
+    font-size: 0.78rem;
+    font-weight: 800;
+    letter-spacing: 0.22em;
+    line-height: 1.2;
+    padding: 6px 0;
+    user-select: none;
+    pointer-events: none;
+    border-bottom: 1px solid #94a3b8;
+}
+.stTabs .tab-grp-label.s { grid-column: 1 / span 4; background-color: #c3d6f6; color: #1e3a8a; }
+.stTabs .tab-grp-label.i { grid-column: 5 / span 4; background-color: #bdeee3; color: #0f766e; border-left: 2px solid #64748b; }
 
-/* 탭 내부 개별 버튼들을 하나의 모던한 세그먼트로 구성 */
+/* 개별 탭: 틈·둥근 모서리 없이 그룹 색으로 이어 붙임 */
 .stTabs [data-baseweb="tab"] {
     background-color: transparent !important;
-    border-radius: 8px !important;
+    border-radius: 0 !important;
+    margin: 0 !important;
     padding: 10px 12px !important;
     font-weight: 800 !important;
     font-size: 0.85rem !important;
-    color: #475569 !important; /* 세련된 다크그레이 글자색 */
+    color: #334155 !important;
     border: none !important;
-    transition: all 0.2s ease-in-out !important;
-    flex: 1 !important; /* 모바일 화면에서 동일 가로비율 배분 */
+    white-space: nowrap !important;
+    transition: background-color 0.2s ease-in-out !important;
     text-align: center !important;
 }
-
-/* [선택된 탭 강조] 딥 슬레이트 그레이 컬러로 압도적인 선택 상태 시인성 제공 */
-.stTabs [aria-selected="true"] {
-    background-color: #1e293b !important; /* 다크 슬레이트 그레이 */
-    color: #ffffff !important; /* 선명한 화이트 텍스트 */
-    box-shadow: 0 4px 10px -2px rgba(30, 41, 59, 0.3) !important;
-}
+.stTabs [role="tab"][data-grp="s"] { background-color: #e1ebfb !important; }
+.stTabs [role="tab"][data-grp="i"] { background-color: #dcf6ef !important; }
+/* 탭 사이 얇은 구분선 / 그룹 경계는 굵은 선 */
+.stTabs [role="tab"][data-grp="s"]:not([data-first="1"]) { border-left: 1px solid rgba(30, 58, 138, 0.28) !important; }
+.stTabs [role="tab"][data-grp="i"]:not([data-first="1"]) { border-left: 1px solid rgba(15, 118, 110, 0.28) !important; }
+.stTabs [role="tab"][data-grp="i"][data-first="1"] { border-left: 2px solid #64748b !important; }
+/* [선택된 탭] 그룹의 진한 색 + 흰 글씨 */
+.stTabs [role="tab"][data-grp="s"][aria-selected="true"] { background-color: #1e3a8a !important; color: #ffffff !important; }
+.stTabs [role="tab"][data-grp="i"][aria-selected="true"] { background-color: #0f766e !important; color: #ffffff !important; }
+.stTabs [aria-selected="true"] { color: #ffffff !important; box-shadow: none !important; }
 
 /* 시뮬레이션 설정 상자도 품격 있는 뉴트럴 그레이 톤 플레이트로 교체 */
 .control-panel {
@@ -2394,6 +2428,29 @@ else:
       ph.id = 'tab-sticky-ph';
       tl.parentNode.insertBefore(ph, tl);
     }
+    var N_STRAT = 4;  // 앞 4개 탭(혼합전략·A·B·C)이 '전략' 그룹, 나머지는 '정보' 그룹
+    var tabs = tl.querySelectorAll('[role="tab"]');
+    for (var i = 0; i < tabs.length; i++) {
+      var g = i < N_STRAT ? 's' : 'i';
+      var f = (i === 0 || i === N_STRAT) ? '1' : '0';
+      if (tabs[i].getAttribute('data-grp') !== g) { tabs[i].setAttribute('data-grp', g); }
+      if (tabs[i].getAttribute('data-first') !== f) { tabs[i].setAttribute('data-first', f); }
+    }
+    if (tabs.length > N_STRAT) {
+      var ge = tabs[0].parentElement;  // 모든 탭을 직접 담고 있는 가장 가까운 공통 부모
+      while (ge && !ge.contains(tabs[tabs.length - 1])) { ge = ge.parentElement; }
+      if (ge) {
+        if (!ge.classList.contains('tab-grid')) { ge.classList.add('tab-grid'); }
+        doc.querySelectorAll('.tab-grp-label').forEach(function (e) { if (e.parentElement !== ge) { e.remove(); } });  // 이전 버전이 남긴 라벨 정리
+        if (ge.querySelectorAll(':scope > .tab-grp-label').length !== 2) {
+          ge.querySelectorAll(':scope > .tab-grp-label').forEach(function (e) { e.remove(); });
+          var lbI = doc.createElement('div'); lbI.className = 'tab-grp-label i'; lbI.textContent = 'INSIGHTS';
+          var lbS = doc.createElement('div'); lbS.className = 'tab-grp-label s'; lbS.textContent = 'STRATEGY';
+          ge.insertBefore(lbI, ge.firstChild);
+          ge.insertBefore(lbS, ge.firstChild);
+        }
+      }
+    }
     var top = headerH();
     var r = ph.getBoundingClientRect();
     if (r.top <= top) {
@@ -2404,8 +2461,6 @@ else:
       tl.style.setProperty('width', r.width + 'px', 'important');
       tl.style.setProperty('box-sizing', 'border-box', 'important');
       tl.style.setProperty('background-color', '#f8fafc', 'important');
-      tl.style.setProperty('padding-top', '6px', 'important');
-      tl.style.setProperty('padding-bottom', '2px', 'important');
       tl.style.setProperty('z-index', '999', 'important');
       tl.style.setProperty('box-shadow', '0 6px 14px -4px rgba(15,23,42,0.35)', 'important');
     } else {
