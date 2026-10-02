@@ -112,35 +112,73 @@ st.caption("야후 파이낸스 실시간 데이터 기반 수시 리밸런싱 �
 # ============================================================
 # 백테스트 비용·세금 반영 설정 (슬리피지 / 미국주식 양도소득세) — 선택 반영
 # ============================================================
+def fmt_krw(x):
+    """원화를 읽기 쉬운 단위(억원/만원/원)로 표시."""
+    x = float(x)
+    a = abs(x)
+    if a >= 1e8:
+        return f"{x / 1e8:,.2f}억원"
+    if a >= 1e4:
+        return f"{x / 1e4:,.0f}만원"
+    return f"{x:,.0f}원"
+
+
+# 설정 박스를 은은한 노란색으로 강조 (마커 + JS 이중 지정)
+st.markdown("""<style>
+[data-testid="stExpander"].cost-exp details, [data-testid="stExpander"]:has(.cost-exp-marker) details{
+  border:1.5px solid #f2c94c !important;background:#fffdf4 !important;border-radius:12px}
+[data-testid="stExpander"].cost-exp summary, [data-testid="stExpander"]:has(.cost-exp-marker) summary{
+  background:#fff6d6 !important;font-weight:700;border-radius:10px}
+</style>""", unsafe_allow_html=True)
+
 with st.expander("⚙️ 백테스트 비용·세금 반영 설정", expanded=False):
+    st.markdown('<span class="cost-exp-marker"></span>', unsafe_allow_html=True)
+    COST_CAPITAL = st.number_input(
+        "① 초기 투자금 (원)", min_value=100000, max_value=100000000000, value=10000000, step=1000000,
+        format="%d", key="cost_capital",
+        help="백테스트 시작 시점에 이 금액을 투자했다고 가정하고, 슬리피지와 양도세를 원화로 환산합니다. 자산 계산기의 초기 투자금에도 함께 반영됩니다.")
+    st.caption(f"= ₩{COST_CAPITAL:,.0f} ({fmt_krw(COST_CAPITAL)}) · 백테스트 시작일에 전액 투자한 것으로 가정합니다.")
     _cs1, _cs2 = st.columns(2)
-    COST_SLIP_ON = _cs1.checkbox("슬리피지 반영", value=False, key="cost_slip_on",
+    COST_SLIP_ON = _cs1.checkbox("② 슬리피지 반영", value=False, key="cost_slip_on",
                                  help="종목을 사고팔 때마다 체결가 차이로 손해 보는 비용을 월별 수익에서 차감합니다.")
     COST_SLIP_PCT = _cs1.number_input("슬리피지 (매수·매도 각 1회당 %)", min_value=0.0, max_value=5.0, value=1.0, step=0.1,
                                       key="cost_slip_pct", disabled=not COST_SLIP_ON)
-    COST_TAX_ON = _cs2.checkbox("미국주식 양도소득세 반영", value=False, key="cost_tax_on",
-                                help="매년 12월 말에 그 해의 순이익(손실이면 0)에 세율을 곱해 자산에서 차감합니다.")
+    if COST_SLIP_ON:
+        _cs1.caption(f"전량 교체 1회 ≈ ₩{COST_CAPITAL * COST_SLIP_PCT / 100 * 2:,.0f} (매도+매수)")
+    COST_TAX_ON = _cs2.checkbox("③ 미국주식 양도소득세 반영", value=False, key="cost_tax_on",
+                                help="매년 12월 말에 그 해의 순이익에서 기본공제를 뺀 금액에 세율을 곱해 자산에서 차감합니다.")
     COST_TAX_PCT = _cs2.number_input("양도소득세율 (%)", min_value=0.0, max_value=50.0, value=22.0, step=0.5,
                                      key="cost_tax_pct", disabled=not COST_TAX_ON)
+    COST_DEDUCT = _cs2.number_input("연 기본공제 (원)", min_value=0, max_value=100000000, value=2500000, step=500000,
+                                    format="%d", key="cost_deduct", disabled=not COST_TAX_ON,
+                                    help="해외주식 양도차익에서 매년 빼주는 금액(기본 250만원). 0으로 두면 공제 없이 계산합니다.")
     st.caption(
         "• 슬리피지: 리밸런싱으로 바뀐 비중만큼 매수·매도 각각에 부과합니다. 한 종목을 전량 교체하면 매도 1% + 매수 1% = 약 2%가 차감됩니다. "
         "현금 전환·월중 하드스탑 청산 후 재진입도 거래로 계산합니다.\n"
-        "• 양도세: 해마다 12월 말 순이익에 부과(손실 해는 0, 이월공제 없음)하고, 기본공제 250만원·환전 비용은 반영하지 않습니다. "
-        "진행 중인 올해분 세금은 연말에 차감됩니다.\n"
+        "• 양도세: 해마다 12월 말 순이익에서 기본공제(기본 250만원)를 뺀 금액에 세율을 부과합니다(손실 해는 0, 이월공제 없음). "
+        "환전 비용은 반영하지 않으며, 진행 중인 올해분 세금은 연말에 차감됩니다.\n"
         "• 설정은 혼합전략·전략 A·B·C 백테스트 결과(CAGR·MDD·NAV·월별 표·차트)에 모두 적용됩니다."
     )
 
 
-def apply_trading_costs(bt):
-    """백테스트 결과(월별 DataFrame)에 슬리피지·양도세를 반영한 새 결과를 돌려줍니다. 둘 다 꺼져 있으면 원본 그대로."""
-    if bt is None or len(bt) == 0 or not (COST_SLIP_ON or COST_TAX_ON):
+def _cost_cfg():
+    """현재 상단 설정을 (캐시 키로 쓸 수 있는) 튜플로 반환: (슬리피지 on, %, 세금 on, %, 초기 투자금, 연 공제)."""
+    return (bool(COST_SLIP_ON), float(COST_SLIP_PCT), bool(COST_TAX_ON), float(COST_TAX_PCT), float(COST_CAPITAL), float(COST_DEDUCT))
+
+
+def apply_trading_costs(bt, cfg=None):
+    """백테스트 결과(월별 DataFrame)에 슬리피지·양도세를 반영한 새 결과를 돌려줍니다. 둘 다 꺼져 있으면 원본 그대로.
+    NAV 100 = 초기 투자금(COST_CAPITAL원)으로 보고 원화 금액(slip_krw, tax_krw)을 함께 기록합니다."""
+    slip_on, slip_pct, tax_on, tax_pct, cap, deduct = cfg if cfg is not None else _cost_cfg()
+    if bt is None or len(bt) == 0 or not (slip_on or tax_on):
         return bt
-    slip = COST_SLIP_PCT / 100.0 if COST_SLIP_ON else 0.0
-    tax = COST_TAX_PCT / 100.0 if COST_TAX_ON else 0.0
+    slip = slip_pct / 100.0 if slip_on else 0.0
+    tax = tax_pct / 100.0 if tax_on else 0.0
+    krw_per_pt = cap / 100.0
     df = bt.reset_index(drop=True).copy()
     nav, peak, year_start_nav = 100.0, 100.0, 100.0
     prev_alloc = {}
-    navs, rets, dds, slips, taxes = [], [], [], [], []
+    navs, rets, dds, slip_k, tax_k, gain_k, taxable_k = [], [], [], [], [], [], []
     for _, row in df.iterrows():
         gross = float(row["monthly_return"]) / 100.0
         alloc = dict(row["alloc"]) if isinstance(row["alloc"], dict) else {}
@@ -150,39 +188,63 @@ def apply_trading_costs(bt):
         buy_cost = slip * traded
         stop_cost = slip * sum(w for k, w in alloc.items() if k != "CASH (현금)") / 100.0 if stopped else 0.0
         nav_before = nav
-        nav = nav * (1 - buy_cost) * (1 + gross) * (1 - stop_cost)
-        slip_pct = (1 - (1 - buy_cost) * (1 - stop_cost)) * 100.0
-        tax_paid = 0.0
+        nav_after_buy = nav_before * (1 - buy_cost)
+        nav_mid = nav_after_buy * (1 + gross)
+        nav = nav_mid * (1 - stop_cost)
+        slip_pts = nav_before * buy_cost + nav_mid * stop_cost
+        tax_pts, gain_krw, taxable_krw = 0.0, np.nan, np.nan
         if tax > 0 and pd.Timestamp(row["date"]).month == 12:
-            gain = nav - year_start_nav
-            if gain > 0:
-                tax_paid = gain * tax
-                nav -= tax_paid
+            gain_krw = (nav - year_start_nav) * krw_per_pt
+            taxable_krw = max(0.0, gain_krw - float(deduct))
+            tax_pts = taxable_krw * tax / krw_per_pt
+            nav -= tax_pts
             year_start_nav = nav
         peak = max(peak, nav)
         navs.append(nav)
         rets.append((nav / nav_before - 1) * 100.0)
         dds.append((nav / peak - 1) * 100.0)
-        slips.append(slip_pct)
-        taxes.append(tax_paid)
+        slip_k.append(slip_pts * krw_per_pt)
+        tax_k.append(tax_pts * krw_per_pt)
+        gain_k.append(gain_krw)
+        taxable_k.append(taxable_krw)
         prev_alloc = {} if stopped else alloc  # 월중 손절 후에는 현금 상태에서 다시 진입
     df["nav"], df["monthly_return"], df["drawdown"] = navs, rets, dds
-    df["slip_cost_pct"], df["tax_paid"] = slips, taxes
+    df["slip_krw"], df["tax_krw"], df["gain_krw"], df["taxable_krw"] = slip_k, tax_k, gain_k, taxable_k
     return df
 
 
 def cost_status_caption(bt):
-    """현재 비용·세금 반영 상태를 한 줄로 표시."""
-    if not (COST_SLIP_ON or COST_TAX_ON):
+    """현재 비용·세금 반영 상태를 원화 카드와 연도별 표로 표시."""
+    if not (COST_SLIP_ON or COST_TAX_ON) or "slip_krw" not in bt:
         st.caption("💸 거래비용·세금 미반영 (맨 위 '⚙️ 백테스트 비용·세금 반영 설정'에서 선택)")
         return
-    parts = []
-    if COST_SLIP_ON and "slip_cost_pct" in bt:
-        parts.append(f"슬리피지 {COST_SLIP_PCT:g}%/회 (월별 비용 합계 {bt['slip_cost_pct'].sum():.1f}%)")
-    if COST_TAX_ON and "tax_paid" in bt:
-        parts.append(f"양도세 {COST_TAX_PCT:g}% 연 1회 (납부 합계 NAV {bt['tax_paid'].sum():.1f}pt)")
-    st.caption("✅ 반영 중 · " + " · ".join(parts))
-
+    slip_sum = float(bt["slip_krw"].sum())
+    tax_sum = float(bt["tax_krw"].sum())
+    final_krw = float(bt["nav"].iloc[-1]) / 100.0 * COST_CAPITAL
+    cards = []
+    if COST_SLIP_ON:
+        cards.append((f"슬리피지 누적 ({COST_SLIP_PCT:g}%/회)", fmt_krw(slip_sum), f"₩{slip_sum:,.0f}", "neg"))
+    if COST_TAX_ON:
+        cards.append((f"양도세 누적 ({COST_TAX_PCT:g}%)", fmt_krw(tax_sum), f"₩{tax_sum:,.0f} · 연 공제 {fmt_krw(COST_DEDUCT)}", "neg"))
+    cards.append(("세후 최종 자산", fmt_krw(final_krw), f"₩{final_krw:,.0f} · 초기 투자금 {fmt_krw(COST_CAPITAL)}", "neutral"))
+    st.caption(f"✅ 비용·세금 반영 중 · 초기 투자금 ₩{COST_CAPITAL:,.0f} 기준")
+    hl_cards(cards)
+    d = bt.copy()
+    d["연도"] = pd.to_datetime(d["date"]).dt.year
+    rows = []
+    for yr, g in d.groupby("연도"):
+        gain = g["gain_krw"].max()
+        taxable = g["taxable_krw"].max()
+        rows.append({
+            "연도": int(yr),
+            "연말 자산(세후)": f"₩{g['nav'].iloc[-1] / 100.0 * COST_CAPITAL:,.0f}",
+            "순이익(세전)": f"₩{gain:,.0f}" if pd.notna(gain) else "연말 전",
+            "과세표준(공제후)": f"₩{taxable:,.0f}" if pd.notna(taxable) else "-",
+            "양도세": f"₩{g['tax_krw'].sum():,.0f}",
+            "슬리피지": f"₩{g['slip_krw'].sum():,.0f}",
+        })
+    with st.expander("💴 연도별 비용·세금 내역 (원)", expanded=False):
+        st.dataframe(pd.DataFrame(rows).iloc[::-1], use_container_width=True, hide_index=True)
 
 # --- 1. 자산군 정의 ---
 # 전략A 자산군 (최신 리스트 12개 자산 - 문구 및 데이터 불일치 수정완료)
@@ -1141,7 +1203,7 @@ def _cagr_from_bt(bt):
 
 
 @st.cache_data(ttl=3600)
-def get_preset_cagrs(start=PRESET_START):
+def get_preset_cagrs(start=PRESET_START, cost_cfg=None):
     out = {}
     try:
         spy_divs = get_spy_dividend_history()
@@ -1160,6 +1222,8 @@ def get_preset_cagrs(start=PRESET_START):
         try:
             daily = get_daily_price_history_a(tickers, start=start)
             bt = runner(to_monthly_last_a(daily))
+            if cost_cfg is not None and len(bt) > 0:
+                bt = apply_trading_costs(bt, cost_cfg)  # 상단 슬리피지·세금 설정 반영
             out[key] = round(float(_cagr_from_bt(bt)), 2) if len(bt) > 0 else None
         except Exception:
             out[key] = None
@@ -2052,10 +2116,21 @@ else:
   doc.addEventListener('mouseout', onOut, true);
   doc.addEventListener('click', onClick, true);
   win.addEventListener('scroll', hide, true);
+  var mt = null;
+  function markCost() {
+    doc.querySelectorAll('[data-testid="stExpander"]').forEach(function (e) {
+      var sm = e.querySelector('summary');
+      if (sm && sm.textContent.indexOf('백테스트 비용·세금') >= 0) { e.classList.add('cost-exp'); }
+    });
+  }
+  markCost();
+  var mo = new win.MutationObserver(function () { if (mt) { win.clearTimeout(mt); } mt = win.setTimeout(markCost, 200); });
+  mo.observe(doc.body, { childList: true, subtree: true });
   win.__glOff = function () {
     doc.removeEventListener('pointerdown', onDown, true); doc.removeEventListener('mouseover', onOver, true);
     doc.removeEventListener('mouseout', onOut, true); doc.removeEventListener('click', onClick, true);
     win.removeEventListener('scroll', hide, true);
+    mo.disconnect();
   };
 })();
 </script>
@@ -4630,7 +4705,8 @@ digraph G {
             "미래 자산의 실제 성장 경로를 정밀하게 예측합니다. **세율 적용**, **생활비 지출 설정**, 및 **물가상승률 할인**까지 연산하는 실전형 자산 시뮬레이터입니다."
         )
 
-        _preset_cagr = get_preset_cagrs()
+        _cost_on = bool(COST_SLIP_ON or COST_TAX_ON)
+        _preset_cagr = get_preset_cagrs(PRESET_START, _cost_cfg() if _cost_on else None)
 
         def _pv(k):
             v = _preset_cagr.get(k)
@@ -4639,29 +4715,48 @@ digraph G {
         if "cagr_input" not in st.session_state:
             st.session_state.cagr_input = 25.0  # 계산기 초기값 (퀵 프리셋 버튼으로 전략별 실측값 선택 가능)
 
+        # 상단 설정이 바뀌면, 직전에 눌러 둔 프리셋 값(직접 고치지 않은 경우)을 새 값으로 갱신
+        _sel = st.session_state.get("_preset_sel")
+        if _sel and abs(st.session_state.cagr_input - st.session_state.get("_preset_val", -999.0)) < 0.005 \
+                and abs(_pv(_sel) - st.session_state["_preset_val"]) >= 0.005:
+            st.session_state.cagr_input = _pv(_sel)
+            st.session_state["_preset_val"] = _pv(_sel)
+
+        def _apply_preset(k):
+            st.session_state.cagr_input = _pv(k)
+            st.session_state["_preset_sel"] = k
+            st.session_state["_preset_val"] = _pv(k)
+
         st.markdown("##### ⚡ 자산배분 전략 실측 CAGR 퀵 프리셋")
         col_pre1, col_pre2, col_pre3, col_pre4 = st.columns(4)
-        if col_pre1.button(f"🏆 2026 혼합 ({_pv('mix'):.2f}%)"):
-            st.session_state.cagr_input = _pv("mix")
-            st.rerun()
-        if col_pre2.button(f"🛡️ 전략 A ({_pv('A'):.2f}%)"):
-            st.session_state.cagr_input = _pv("A")
-            st.rerun()
-        if col_pre3.button(f"⚡ 전략 B ({_pv('B'):.2f}%)"):
-            st.session_state.cagr_input = _pv("B")
-            st.rerun()
-        if col_pre4.button(f"🔄 전략 C ({_pv('C'):.2f}%)"):
-            st.session_state.cagr_input = _pv("C")
-            st.rerun()
+        col_pre1.button(f"🏆 2026 혼합 ({_pv('mix'):.2f}%)", key="preset_btn_mix", on_click=_apply_preset, args=("mix",))
+        col_pre2.button(f"🛡️ 전략 A ({_pv('A'):.2f}%)", key="preset_btn_A", on_click=_apply_preset, args=("A",))
+        col_pre3.button(f"⚡ 전략 B ({_pv('B'):.2f}%)", key="preset_btn_B", on_click=_apply_preset, args=("B",))
+        col_pre4.button(f"🔄 전략 C ({_pv('C'):.2f}%)", key="preset_btn_C", on_click=_apply_preset, args=("C",))
         if all(_preset_cagr.get(k) is not None for k in ["mix", "A", "B", "C"]):
             st.caption(f"※ 각 전략 탭의 초기 설정(백테스트 시작일 {PRESET_START}, 안전장치 미적용) 기준 실측 CAGR이며, 전략 탭의 '연환산 복리 수익률(CAGR)'과 같은 값입니다.")
+            if _cost_on:
+                _bits = []
+                if COST_SLIP_ON:
+                    _bits.append(f"슬리피지 {COST_SLIP_PCT:g}%/회")
+                if COST_TAX_ON:
+                    _bits.append(f"양도세 {COST_TAX_PCT:g}% (연 공제 {fmt_krw(COST_DEDUCT)})")
+                st.caption(f"💸 상단 '백테스트 비용·세금 반영 설정'이 적용된 값입니다 · " + " · ".join(_bits) + f" · 초기 투자금 {fmt_krw(COST_CAPITAL)}")
         else:
             st.caption("※ 일부 전략의 실측 CAGR을 불러오지 못해 기존 참고값을 표시 중입니다. 잠시 후 새로고침해 주세요.")
 
         st.markdown("---")
+        if st.session_state.get("_calc_init_sync") != COST_CAPITAL:  # 상단 '초기 투자금'이 바뀌면 계산기에도 반영
+            st.session_state["calc_init_input"] = int(round(COST_CAPITAL / 10000))
+            st.session_state["_calc_init_sync"] = COST_CAPITAL
+        _TAX_DONE = "양도세 반영 완료 (0.0% · 프리셋 CAGR에 포함)"
+        if st.session_state.get("_calc_tax_prev") != COST_TAX_ON:  # 양도세 반영을 켜면 이중 과세 방지로 세율 0% 선택
+            st.session_state["calc_tax_sel"] = _TAX_DONE if COST_TAX_ON else "미국주식양도세 (22.0%)"
+            st.session_state["_calc_tax_prev"] = COST_TAX_ON
         col_inp1, col_inp2 = st.columns(2)
         with col_inp1:
-            calc_init = st.number_input("초기 투자금 (만원 ₩)", min_value=0, value=10000, step=100)
+            calc_init = st.number_input("초기 투자금 (만원 ₩)", min_value=0, step=100, key="calc_init_input",
+                                        help="상단 '백테스트 비용·세금 반영 설정'의 초기 투자금과 연동됩니다. 여기서 직접 바꿀 수도 있습니다.")
             calc_monthly = st.number_input("매월 저축/적립금 (만원 ₩)", min_value=0, value=0, step=10)
             calc_expense = st.number_input("매월 지출/생활비 (만원 ₩)", min_value=0, value=0, step=10, help="투자수익에서 정기 지출하는 생활비가 있다면 마이너스로 처리됩니다.")
             calc_years = st.slider("시뮬레이션 투자 기간 (년)", min_value=1, max_value=40, value=20)
@@ -4669,13 +4764,13 @@ digraph G {
             calc_cagr = st.number_input("연 목표 수익률 CAGR (%)", min_value=0.0, max_value=100.0, key="cagr_input", step=0.1, format="%.2f")
             calc_inflation = st.number_input("연 예상 물가상승률 (%)", min_value=0.0, max_value=20.0, value=3.0, step=0.1)
             calc_expense_start = st.number_input("지출 시작 시점 (년차)", min_value=1, max_value=max(1, calc_years), value=1, step=1, help="생활비 지출을 몇 년차부터 적용할지 연차를 지정합니다.")
-            calc_tax_opt = st.selectbox("세율 설정", ["일반과세 (15.4%)", "미국주식양도세 (22.0%)", "비과세 계좌 (0.0% / ISA 및 연금저축)", "사용자 정의"], index=1)
+            calc_tax_opt = st.selectbox("세율 설정", ["일반과세 (15.4%)", "미국주식양도세 (22.0%)", "비과세 계좌 (0.0% / ISA 및 연금저축)", "사용자 정의", _TAX_DONE], key="calc_tax_sel")
         
         if calc_tax_opt == "일반과세 (15.4%)":
             tax_rate = 15.4
         elif calc_tax_opt == "미국주식양도세 (22.0%)":
             tax_rate = 22.0
-        elif calc_tax_opt == "비과세 계좌 (0.0% / ISA 및 연금저축)":
+        elif calc_tax_opt in ("비과세 계좌 (0.0% / ISA 및 연금저축)", _TAX_DONE):
             tax_rate = 0.0
         else:
             tax_rate = st.number_input("세율 직접 입력 (%)", min_value=0.0, max_value=50.0, value=15.4, step=0.1)
