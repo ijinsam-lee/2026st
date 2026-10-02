@@ -5119,7 +5119,7 @@ digraph G {
             _names = list(long_px)
             _palette = ["#2563eb", "#dc2626"][:len(_names)]
             x_enc = alt.X("date:T", title=None, axis=alt.Axis(format="%Y", labelOverlap=True))
-            y_enc = alt.Y("drawdown:Q", title="낙폭 (%)")
+            y_enc = alt.Y("drawdown:Q", title="낙폭 (%)", stack=None)  # 두 자산을 쌓지 않고 겹쳐서 표시
             color_enc = alt.Color("series:N", scale=alt.Scale(domain=_names, range=_palette), sort=_names,
                                   legend=alt.Legend(orient="top", title=None))
             tip = [alt.Tooltip("date:T", title="주", format="%Y-%m-%d"), alt.Tooltip("series:N", title="구분"),
