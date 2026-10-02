@@ -109,6 +109,81 @@ st.markdown("""
 st.title("📈 동적 자산배분 대시보드")
 st.caption("야후 파이낸스 실시간 데이터 기반 수시 리밸런싱 가이드 (2026년 전략 및 실시간 미국 ETF 랭킹 포함)")
 
+# ============================================================
+# 백테스트 비용·세금 반영 설정 (슬리피지 / 미국주식 양도소득세) — 선택 반영
+# ============================================================
+with st.expander("⚙️ 백테스트 비용·세금 반영 설정", expanded=False):
+    _cs1, _cs2 = st.columns(2)
+    COST_SLIP_ON = _cs1.checkbox("슬리피지 반영", value=False, key="cost_slip_on",
+                                 help="종목을 사고팔 때마다 체결가 차이로 손해 보는 비용을 월별 수익에서 차감합니다.")
+    COST_SLIP_PCT = _cs1.number_input("슬리피지 (매수·매도 각 1회당 %)", min_value=0.0, max_value=5.0, value=1.0, step=0.1,
+                                      key="cost_slip_pct", disabled=not COST_SLIP_ON)
+    COST_TAX_ON = _cs2.checkbox("미국주식 양도소득세 반영", value=False, key="cost_tax_on",
+                                help="매년 12월 말에 그 해의 순이익(손실이면 0)에 세율을 곱해 자산에서 차감합니다.")
+    COST_TAX_PCT = _cs2.number_input("양도소득세율 (%)", min_value=0.0, max_value=50.0, value=22.0, step=0.5,
+                                     key="cost_tax_pct", disabled=not COST_TAX_ON)
+    st.caption(
+        "• 슬리피지: 리밸런싱으로 바뀐 비중만큼 매수·매도 각각에 부과합니다. 한 종목을 전량 교체하면 매도 1% + 매수 1% = 약 2%가 차감됩니다. "
+        "현금 전환·월중 하드스탑 청산 후 재진입도 거래로 계산합니다.\n"
+        "• 양도세: 해마다 12월 말 순이익에 부과(손실 해는 0, 이월공제 없음)하고, 기본공제 250만원·환전 비용은 반영하지 않습니다. "
+        "진행 중인 올해분 세금은 연말에 차감됩니다.\n"
+        "• 설정은 혼합전략·전략 A·B·C 백테스트 결과(CAGR·MDD·NAV·월별 표·차트)에 모두 적용됩니다."
+    )
+
+
+def apply_trading_costs(bt):
+    """백테스트 결과(월별 DataFrame)에 슬리피지·양도세를 반영한 새 결과를 돌려줍니다. 둘 다 꺼져 있으면 원본 그대로."""
+    if bt is None or len(bt) == 0 or not (COST_SLIP_ON or COST_TAX_ON):
+        return bt
+    slip = COST_SLIP_PCT / 100.0 if COST_SLIP_ON else 0.0
+    tax = COST_TAX_PCT / 100.0 if COST_TAX_ON else 0.0
+    df = bt.reset_index(drop=True).copy()
+    nav, peak, year_start_nav = 100.0, 100.0, 100.0
+    prev_alloc = {}
+    navs, rets, dds, slips, taxes = [], [], [], [], []
+    for _, row in df.iterrows():
+        gross = float(row["monthly_return"]) / 100.0
+        alloc = dict(row["alloc"]) if isinstance(row["alloc"], dict) else {}
+        stopped = "월중손절" in str(row["mode"])
+        keys = (set(alloc) | set(prev_alloc)) - {"CASH (현금)"}
+        traded = sum(abs(alloc.get(k, 0.0) - prev_alloc.get(k, 0.0)) for k in keys) / 100.0
+        buy_cost = slip * traded
+        stop_cost = slip * sum(w for k, w in alloc.items() if k != "CASH (현금)") / 100.0 if stopped else 0.0
+        nav_before = nav
+        nav = nav * (1 - buy_cost) * (1 + gross) * (1 - stop_cost)
+        slip_pct = (1 - (1 - buy_cost) * (1 - stop_cost)) * 100.0
+        tax_paid = 0.0
+        if tax > 0 and pd.Timestamp(row["date"]).month == 12:
+            gain = nav - year_start_nav
+            if gain > 0:
+                tax_paid = gain * tax
+                nav -= tax_paid
+            year_start_nav = nav
+        peak = max(peak, nav)
+        navs.append(nav)
+        rets.append((nav / nav_before - 1) * 100.0)
+        dds.append((nav / peak - 1) * 100.0)
+        slips.append(slip_pct)
+        taxes.append(tax_paid)
+        prev_alloc = {} if stopped else alloc  # 월중 손절 후에는 현금 상태에서 다시 진입
+    df["nav"], df["monthly_return"], df["drawdown"] = navs, rets, dds
+    df["slip_cost_pct"], df["tax_paid"] = slips, taxes
+    return df
+
+
+def cost_status_caption(bt):
+    """현재 비용·세금 반영 상태를 한 줄로 표시."""
+    if not (COST_SLIP_ON or COST_TAX_ON):
+        st.caption("💸 거래비용·세금 미반영 (맨 위 '⚙️ 백테스트 비용·세금 반영 설정'에서 선택)")
+        return
+    parts = []
+    if COST_SLIP_ON and "slip_cost_pct" in bt:
+        parts.append(f"슬리피지 {COST_SLIP_PCT:g}%/회 (월별 비용 합계 {bt['slip_cost_pct'].sum():.1f}%)")
+    if COST_TAX_ON and "tax_paid" in bt:
+        parts.append(f"양도세 {COST_TAX_PCT:g}% 연 1회 (납부 합계 NAV {bt['tax_paid'].sum():.1f}pt)")
+    st.caption("✅ 반영 중 · " + " · ".join(parts))
+
+
 # --- 1. 자산군 정의 ---
 # 전략A 자산군 (최신 리스트 12개 자산 - 문구 및 데이터 불일치 수정완료)
 OFFENSIVE_A = ["QQQ", "FEZ", "GLD", "IBB", "SMH", "EEM", "XLK", "LIT", "XLE", "UBT", "XLV", "QTUM"]
@@ -1135,7 +1210,7 @@ def render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="mix"):
         st.markdown("### 🛑 월중 하드스탑 모니터 (이번 달 일별 수익률)")
     else:
         st.markdown(f"### 📈 전략 {strategy} 이번 달 일별 수익률")
-    st.caption("⚠️ 슬리피지·거래비용·세금·환전 비용은 반영되지 않았습니다. 실제 체결 가격과 계좌 수익률은 이 값과 다를 수 있습니다.")
+    st.caption("⚠️ 이 일별 표는 슬리피지·거래비용·세금·환전 비용이 반영되지 않았으며 백테스트 비용·세금 설정과 무관합니다. 실제 체결 가격과 계좌 수익률은 이 값과 다를 수 있습니다.")
 
     if is_mix:
         stop_pct = float(st.session_state.get("mix_stop_pct", -7.0))
@@ -1897,7 +1972,7 @@ def render_strategy_report():
     with st.expander("⑧ 한계와 유의사항", expanded=False):
         st.markdown("""
 - 모든 결과는 표본 내(in-sample) 성과이며 CAGR이 매우 높아 과최적화·생존편향 가능성이 있습니다.
-- 현금 수익률 0%, 월간 데이터 기준이며 거래비용·세금은 반영되지 않았습니다.
+- 현금 수익률 0%, 월간 데이터 기준입니다. 거래비용·세금은 기본 미반영이며, 맨 위 '⚙️ 백테스트 비용·세금 반영 설정'에서 선택할 수 있습니다.
 - 하드스탑은 최근 6~7회만 발동한 표본이라 2000·2008년급 붕괴에서의 효과는 검증되지 않았습니다.
 - 위 수치는 2026-10-01 시점의 검증값이며 새 데이터가 쌓이면 달라질 수 있습니다.
 - 현재 SPY 배당수익률은 0.99%로, 전략 C는 고정 기준선 방식에서 방어 신호가 이어지고 있습니다.
@@ -2332,7 +2407,7 @@ digraph G {
 월말 종가로 신호와 비중을 정하고, 같은 종가에 체결했다고 보고 다음 달 월간 수익률을 적용합니다. NAV는 100에서 시작하며, 수익은 실현되는 달(다음 월말)에 기록합니다.
 
 - **현금 수익률**: 0%로 가정합니다.
-- **거래비용·세금·슬리피지**: 반영하지 않습니다.
+- **거래비용·세금·슬리피지**: 기본은 반영하지 않으며, 맨 위 설정에서 슬리피지(기본 1%/회)와 양도세(22%, 연 1회)를 선택 반영할 수 있습니다.
 - **혼합 결합**: 세 전략이 모두 기록을 가진 날짜만 씁니다(교집합).
 - **드로다운**: 월말 NAV의 직전 고점 대비 하락률입니다. 월중 낙폭은 잡히지 않습니다.
 
@@ -2369,7 +2444,7 @@ digraph G {
 
 백테스트 수치는 비용이 없고 월말 종가에 바로 체결된다는 가정 위의 값이라, 실제 운용 성과보다 높게 나올 수 있습니다.
 
-- **비용 미반영**: 전략 B·C는 매달 100% 교체될 수 있어 턴오버가 큽니다. 거래비용과 세금을 빼면 수익률이 낮아집니다.
+- **비용 미반영**: 전략 B·C는 매달 100% 교체될 수 있어 턴오버가 큽니다. 거래비용과 세금을 빼면 수익률이 낮아집니다. (맨 위 설정에서 반영해 확인할 수 있습니다.)
 - **동일 종가 체결**: 신호를 계산한 종가에 체결한다고 봅니다. 실제로는 다음 날 시가 등에 체결되므로 차이가 생깁니다.
 - **배당수익률 편향 가능성**: 전략 C 백테스트는 배당을 반영해 낮아진 수정주가로 나눕니다. 과거 배당수익률이 실제보다 높게 계산돼 공격 신호가 더 자주 나올 수 있습니다.
 - **현금 수익률 0%**: 현금 비중이 큰 방어 구간과 상한 초과분의 이자 수익이 빠져 있습니다.
@@ -2587,6 +2662,7 @@ digraph G {
                     )
                 else:
                     bt_results_mix = run_backtest_strategy_mix_full(monthly_px_mix, spy_divs_mix)
+                bt_results_mix = apply_trading_costs(bt_results_mix)
                 bt_ok_mix = len(bt_results_mix) > 0
             except Exception as e:
                 st.error(f"2026 혼합전략 백테스트 데이터 로딩 중 오류가 발생했습니다: {e}")
@@ -2596,6 +2672,7 @@ digraph G {
             st.warning("백테스트 데이터가 부족하거나 오류가 있습니다. 잠시 후 다시 시도해 주세요.")
         else:
             st.caption(f"시뮬레이션 기간: {bt_results_mix['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_mix['date'].iloc[-1].strftime('%Y-%m')}")
+            cost_status_caption(bt_results_mix)
             if use_improved_mix:
                 applied_stages = []
                 if apply_cap_mix:
@@ -2985,7 +3062,7 @@ digraph G {
                 f"③ 하드스탑 {mix_stop:.1f}%만": {"stop": mix_stop},
                 "④ 상한 + 하드스탑": {"cap": mix_cap, "stop": mix_stop},
             }
-            _mix_res = {k: _run_mix(**v) for k, v in _mix_cases.items()}
+            _mix_res = {k: apply_trading_costs(_run_mix(**v)) for k, v in _mix_cases.items()}
             _mix_rows = []
             for _k, _bt in _mix_res.items():
                 _sm = summarize_bt_mix(_bt)
@@ -3053,7 +3130,7 @@ digraph G {
 ## 백테스트 가정과 한계
 
 - 월말 종가로 신호를 계산하고 같은 종가에 체결했다고 봅니다. 현금 수익률은 0%입니다.
-- 슬리피지·거래비용·세금·환전 비용은 반영하지 않았습니다.
+- 슬리피지·세금은 기본 미반영이며 맨 위 설정에서 선택 반영할 수 있습니다. 환전 비용은 반영하지 않았습니다.
 - 첫 12개월은 모멘텀 계산용 워밍업이라 성과 기록에서 빠집니다.
 - QTUM처럼 상장 기간이 짧은 자산은 데이터가 없는 달에 후보에서 빠집니다.
 - 공격 시 순위만으로 4종목을 고르므로, 공격 국면 중 하락장에서는 손실을 그대로 받습니다.
@@ -3131,6 +3208,7 @@ digraph G {
                 daily_px_a = get_daily_price_history_a(bt_tickers_a, start=bt_start_a)
                 monthly_px_a = to_monthly_last_a(daily_px_a)
                 bt_results_a = run_backtest_strategy_a_full(monthly_px_a)
+                bt_results_a = apply_trading_costs(bt_results_a)
                 bt_ok_a = len(bt_results_a) > 0
             except Exception as e:
                 st.error(f"전략 A 백테스트 데이터 로딩 중 오류가 발생했습니다: {e}")
@@ -3140,6 +3218,7 @@ digraph G {
             st.warning("백테스트 데이터가 부족하거나 오류가 있습니다. 잠시 후 다시 시도해 주세요.")
         else:
             st.caption(f"시뮬레이션 기간: {bt_results_a['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_a['date'].iloc[-1].strftime('%Y-%m')}")
+            cost_status_caption(bt_results_a)
 
             total_days_a = (bt_results_a["date"].iloc[-1] - bt_results_a["date"].iloc[0]).days
             total_years_a = total_days_a / 365.25 if total_days_a > 0 else 1.0
@@ -3544,7 +3623,7 @@ digraph G {
 ## 백테스트 가정과 한계
 
 - 월말 종가로 신호를 계산하고 같은 종가에 체결했다고 봅니다. 현금 수익률은 0%입니다.
-- 슬리피지·거래비용·세금·환전 비용은 반영하지 않았습니다. 1종목 전량 교체가 잦아 비용 영향이 큽니다.
+- 슬리피지·세금은 기본 미반영이며 맨 위 설정에서 선택 반영할 수 있습니다. 환전 비용은 반영하지 않았습니다. 1종목 전량 교체가 잦아 비용 영향이 큽니다.
 - 3배 레버리지 ETF는 변동성 손실(음의 복리)이 있어, 횡보·급변 구간에서 기초지수 3배보다 성과가 나빠질 수 있습니다.
 - 1종목 집중이라 월중 급락을 그대로 받습니다. 개별 전략에는 월중 하드스탑이 없습니다.
 """)
@@ -3621,6 +3700,7 @@ digraph G {
                 daily_px_b = get_daily_price_history_a(bt_tickers_b, start=bt_start_b)
                 monthly_px_b = to_monthly_last_a(daily_px_b)
                 bt_results_b = run_backtest_strategy_b_full(monthly_px_b)
+                bt_results_b = apply_trading_costs(bt_results_b)
                 bt_ok_b = len(bt_results_b) > 0
             except Exception as e:
                 st.error(f"전략 B 백테스트 데이터 로딩 중 오류가 발생했습니다: {e}")
@@ -3630,6 +3710,7 @@ digraph G {
             st.warning("백테스트 데이터가 부족하거나 오류가 있습니다. 잠시 후 다시 시도해 주세요.")
         else:
             st.caption(f"시뮬레이션 기간: {bt_results_b['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_b['date'].iloc[-1].strftime('%Y-%m')}")
+            cost_status_caption(bt_results_b)
 
             total_days_b = (bt_results_b["date"].iloc[-1] - bt_results_b["date"].iloc[0]).days
             total_years_b = total_days_b / 365.25 if total_days_b > 0 else 1.0
@@ -4032,7 +4113,7 @@ digraph G {
 ## 백테스트 가정과 한계
 
 - 월말 종가로 신호를 계산하고 같은 종가에 체결했다고 봅니다. 현금 수익률은 0%입니다.
-- 슬리피지·거래비용·세금·환전 비용은 반영하지 않았습니다.
+- 슬리피지·세금은 기본 미반영이며 맨 위 설정에서 선택 반영할 수 있습니다. 환전 비용은 반영하지 않았습니다.
 - 백테스트는 배당이 반영된 수정주가로 배당수익률을 나눕니다. 과거 배당수익률이 실제보다 높게 계산돼 공격 신호가 더 자주 나올 수 있습니다.
 - 1.33% 기준은 고정값입니다. 금리·배당 성향이 바뀌면 기준의 의미도 달라질 수 있습니다.
 - QQQM·OILK 등은 상장 기간이 짧아 초기 구간에는 후보에서 빠집니다.
@@ -4118,6 +4199,7 @@ digraph G {
                 monthly_px_c = to_monthly_last_a(daily_px_c)
                 spy_divs_c = get_spy_dividend_history()
                 bt_results_c = run_backtest_strategy_c_full(monthly_px_c, spy_divs_c)
+                bt_results_c = apply_trading_costs(bt_results_c)
                 bt_ok_c = len(bt_results_c) > 0
             except Exception as e:
                 st.error(f"전략 C 백테스트 데이터 로딩 중 오류가 발생했습니다: {e}")
@@ -4127,6 +4209,7 @@ digraph G {
             st.warning("백테스트 데이터가 부족하거나 오류가 있습니다. 잠시 후 다시 시도해 주세요.")
         else:
             st.caption(f"시뮬레이션 기간: {bt_results_c['date'].iloc[0].strftime('%Y-%m')} ~ {bt_results_c['date'].iloc[-1].strftime('%Y-%m')}")
+            cost_status_caption(bt_results_c)
 
             total_days_c = (bt_results_c["date"].iloc[-1] - bt_results_c["date"].iloc[0]).days
             total_years_c = total_days_c / 365.25 if total_days_c > 0 else 1.0
