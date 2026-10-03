@@ -2185,6 +2185,22 @@ def render_html_table(df, ticker_cols=(), text_cols=()):
     st.markdown(f'{_TBL_CSS}<table class="dtbl"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>', unsafe_allow_html=True)
 
 
+def apply_weight_cap(alloc, cap):
+    """단일 티커(현금 제외) 비중이 cap(%)을 넘으면 cap으로 줄이고 초과분을 현금으로 돌립니다.
+    반환: (상한 적용 후 비중 dict, {티커: (원래 비중, 상한 후 비중)}, 현금으로 이동한 합계 %p)"""
+    capped, hit, excess = {}, {}, 0.0
+    for t, w in alloc.items():
+        if t != "CASH (현금)" and w > cap:
+            capped[t] = cap
+            hit[t] = (w, cap)
+            excess += w - cap
+        else:
+            capped[t] = w
+    if excess > 0:
+        capped["CASH (현금)"] = capped.get("CASH (현금)", 0.0) + excess
+    return capped, hit, excess
+
+
 def render_alloc_table(df):
     """비중 분배 현황: 자산마다 2줄(수치 줄 + 참여 전략·선택 기준 줄)로 폰에서도 한눈에 보이는 표."""
     num_cols = ["자산군", "현재가 ($)", "배분 비중 (%)", "1M", "3M", "6M", "12M"]
@@ -2240,7 +2256,12 @@ def render_drawdown_with_benchmark(chart_df, strategy_name):
     domain = [strategy_name, "QQQ"]
     color_scale = alt.Scale(domain=domain, range=["#dc2626", "#9ca3af"])
     x_enc = alt.X("date_str:N", sort=None, title="년-월", axis=alt.Axis(labelOverlap=True))
-    y_enc = alt.Y("drawdown:Q", title="MDD (%)")
+    # 세로축 눈금을 5%p 간격(0, -5, -10, -15 ...)으로 촘촘하게 표시
+    _dd_min = float(long_df["drawdown"].min()) if len(long_df) else 0.0
+    _dd_lo = int(np.floor(_dd_min / 5.0) * 5)
+    _dd_ticks = list(range(0, _dd_lo - 1, -5)) if _dd_lo < 0 else [0, -5]
+    y_enc = alt.Y("drawdown:Q", title="MDD (%)", scale=alt.Scale(domain=[min(_dd_lo, -5), 0], nice=False),
+                  axis=alt.Axis(values=_dd_ticks))
     tip = [alt.Tooltip("date_str:N", title="년-월"), alt.Tooltip("series:N", title="구분"),
            alt.Tooltip("drawdown:Q", title="낙폭 (%)", format=".2f")]
     color_enc = alt.Color("series:N", scale=color_scale, sort=domain,
@@ -2254,7 +2275,7 @@ def render_drawdown_with_benchmark(chart_df, strategy_name):
         opacity=0.6, line={"color": "#991b1b", "strokeWidth": 1.5}
     ).encode(x=x_enc, y=y_enc, color=color_enc, tooltip=tip)
 
-    st.altair_chart((qqq_layer + strat_layer).properties(height=220), use_container_width=True)
+    st.altair_chart((qqq_layer + strat_layer).properties(height=440), use_container_width=True)
 
     if "QQQ" in dd_df.columns:
         st.caption(
@@ -2684,6 +2705,17 @@ else:
     add_to_combined(alloc_b, 33.333, "전략 B", sig_b)
     add_to_combined(alloc_c, 33.333, "전략 C", sig_c)
 
+    # 백테스트 설정의 '비중 상한' 체크박스가 켜져 있으면 실시간 비중에도 동일하게 적용 (초과분은 현금)
+    live_cap_on = bool(st.session_state.get("apply_cap_mix", False))
+    live_cap_pct = float(st.session_state.get("mix_cap_pct", 35.0))
+    live_cap_hit, live_cap_excess = {}, 0.0
+    if live_cap_on:
+        combined_alloc, live_cap_hit, live_cap_excess = apply_weight_cap(combined_alloc, live_cap_pct)
+        for _t, (_w0, _w1) in live_cap_hit.items():
+            contributions[_t] = contributions.get(_t, []) + [f"📐 상한 {live_cap_pct:.0f}% 적용"]
+        if live_cap_excess > 0:
+            contributions["CASH (현금)"] = contributions.get("CASH (현금)", []) + ["📐 비중 상한 초과분"]
+
     mix_data = []
     for ticker, weight in combined_alloc.items():
         if weight > 0.01:
@@ -2745,6 +2777,11 @@ else:
                 _note(_r["Ticker"], f"C·방어: 방어스코어 1위 ({_r['A_방어스코어']:+.2f}%)")
             else:
                 _note("CASH (현금)", f"C·방어: 1위 {_r['Ticker']} 방어스코어 {_r['A_방어스코어']:+.2f}% ≤ 0 → 현금")
+
+    for _t, (_w0, _w1) in live_cap_hit.items():
+        _note(_t, f"비중 상한: 합산 {_w0:.2f}% → {_w1:.2f}%")
+    if live_cap_excess > 0:
+        _note("CASH (현금)", f"비중 상한 초과분 +{live_cap_excess:.2f}%p")
 
     def _ret_txt(ticker, col):
         v = data_dict.get(ticker, {}).get(col)
@@ -2915,7 +2952,7 @@ digraph G {
 | 비중 상한 적용 | 꺼짐 | 체크박스 | 설정 패널 |
 | 월중 하드스탑 적용 | 꺼짐 | 체크박스 | 설정 패널 |
 
-실시간 비중 분배 현황에는 두 리스크 장치가 적용되지 않습니다. 장치는 백테스트 결과에만 반영됩니다.
+실시간 비중 분배 현황에는 '비중 상한'이 체크 시 함께 적용됩니다. 월중 하드스탑은 백테스트와 월중 하드스탑 모니터에서 확인합니다.
 
 ## 한계와 유의사항
 
@@ -2925,7 +2962,7 @@ digraph G {
 - **동일 종가 체결**: 신호를 계산한 종가에 체결한다고 봅니다. 실제로는 다음 날 시가 등에 체결되므로 차이가 생깁니다.
 - **배당수익률 편향 가능성**: 전략 C 백테스트는 배당을 반영해 낮아진 수정주가로 나눕니다. 과거 배당수익률이 실제보다 높게 계산돼 공격 신호가 더 자주 나올 수 있습니다.
 - **현금 수익률 0%**: 현금 비중이 큰 방어 구간과 상한 초과분의 이자 수익이 빠져 있습니다.
-- **실시간 비중과 백테스트 차이**: 실시간 비중 분배에는 비중 상한이 적용되지 않습니다. 상한을 운용 규칙으로 쓰려면 매매 시 따로 확인해야 합니다.
+- **실시간 비중과 백테스트**: '비중 상한' 체크박스를 켜면 실시간 비중 분배·목표 수량 계산기에도 같은 상한(초과분은 현금)이 적용됩니다. 월중 하드스탑은 비중표에는 반영되지 않고 아래 모니터에서 따로 확인합니다.
 - **하드스탑 가정**: 임계치에 닿은 날 종가에 전량 매도된다고 봅니다. 장중 급락이나 갭하락은 반영하지 못합니다.
 - **짧은 이력 자산**: QTUM, QQQM, OILK 등은 상장 기간이 짧습니다. 데이터가 없는 달에는 후보에서 빠지므로 초기 구간의 선택 폭이 좁습니다.
 - **데이터 의존성**: yfinance 응답이 바뀌거나 비면 결과가 달라지거나 표시되지 않을 수 있습니다.
@@ -2940,6 +2977,12 @@ digraph G {
         c_sig3.metric("전략C (배당수익률)", f"{realtime_dy:.2f}%", "공격" if is_attack_c else "방어", delta_color="inverse" if not is_attack_c else "normal")
 
         st.markdown("### 📊 포트폴리오 비중 분배 현황")
+        if live_cap_on:
+            if live_cap_hit:
+                _cap_txt = ", ".join(f"{t} {a:.2f}% → {b:.2f}%" for t, (a, b) in live_cap_hit.items())
+                st.info(f"📐 비중 상한 {live_cap_pct:.0f}% 적용 중: {_cap_txt} · 초과분 {live_cap_excess:.2f}%p는 현금 (아래 설정 패널의 체크박스를 해제하면 원래 비중으로 돌아갑니다)")
+            else:
+                st.caption(f"📐 비중 상한 {live_cap_pct:.0f}% 적용 중 · 현재 상한을 넘는 종목이 없어 비중은 그대로입니다.")
         render_alloc_chips(df_mix)
         chart_col = st.container()
 
@@ -2984,7 +3027,7 @@ digraph G {
                 st.bar_chart(df_mix.set_index("자산군 (Ticker)")["배분 비중 (%)"])
         
         render_alloc_table(df_mix_view)
-        st.caption("※ 자산군에 마우스를 올리거나(폰은 터치) ETF 설명이 표시됩니다. 선택 기준·값: 각 전략이 해당 자산을 고른 이유와 스코어입니다. 1M·3M·6M·12M은 해당 자산의 기간별 수익률입니다. 배분 비중은 전체 자산 대비 %입니다.")
+        st.caption("※ 자산군에 마우스를 올리거나(폰은 터치) ETF 설명이 표시됩니다. 선택 기준·값: 각 전략이 해당 자산을 고른 이유와 스코어입니다. 1M·3M·6M·12M은 해당 자산의 기간별 수익률입니다. 배분 비중은 전체 자산 대비 %입니다. 비중 상한 체크박스를 켜면 상한이 반영된 비중입니다(월중 하드스탑은 아래 모니터에서 별도로 확인).")
 
         st.markdown("### 💰 실시간 리밸런싱 목표 수량 계산기")
         st.markdown("현재 환율과 실시간 주가를 기반으로, 설정한 원화 예산에 필요한 **자산별 목표 환전 달러** 및 **실제 매수 주수**를 계산해 드립니다.")
@@ -3080,7 +3123,10 @@ digraph G {
                             st.markdown(f"**{sig_text_c}**<br/><small>({dy_c:.2f}%)</small>", unsafe_allow_html=True)
                         
                         st.markdown("**포트폴리오 비중:**")
-                        hist_rows = [{"자산명(Ticker)": k, "배분비중 (%)": f"{v:.2f}%"} for k, v in hist_portfolio.items()]
+                        _hist_view = apply_weight_cap(hist_portfolio, live_cap_pct)[0] if live_cap_on else hist_portfolio
+                        if live_cap_on:
+                            st.caption(f"📐 비중 상한 {live_cap_pct:.0f}% 적용")
+                        hist_rows = [{"자산명(Ticker)": k, "배분비중 (%)": f"{v:.2f}%"} for k, v in _hist_view.items() if v > 0.005]
                         if hist_rows:
                             st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
                         else:
@@ -5225,7 +5271,13 @@ digraph G {
             _names = list(long_px)
             _palette = ["#2563eb", "#dc2626"][:len(_names)]
             x_enc = alt.X("date:T", title=None, axis=alt.Axis(format="%Y", labelOverlap=True))
-            y_enc = alt.Y("drawdown:Q", title="낙폭 (%)", stack=None)  # 두 자산을 쌓지 않고 겹쳐서 표시
+            # 0% 위쪽에 흰 여백(라벨 띠)을 만들어 이슈 이름이 색 영역에 가리지 않게 함
+            _ymin = float(view_df["drawdown"].min())
+            _y_lo = float(np.floor(_ymin / 10.0) * 10 - 5)
+            _y_hi = 34.0
+            _yscale = alt.Scale(domain=[_y_lo, _y_hi], nice=False)
+            _ticks = list(range(0, int(_y_lo) - 1, -20))  # 0, -20, -40 ... (양수 눈금은 표시하지 않음)
+            y_enc = alt.Y("drawdown:Q", title="낙폭 (%)", stack=None, scale=_yscale, axis=alt.Axis(values=_ticks))  # 두 자산을 쌓지 않고 겹쳐서 표시
             color_enc = alt.Color("series:N", scale=alt.Scale(domain=_names, range=_palette), sort=_names,
                                   legend=alt.Legend(orient="top", title=None))
             tip = [alt.Tooltip("date:T", title="주", format="%Y-%m-%d"), alt.Tooltip("series:N", title="구분"),
@@ -5243,15 +5295,23 @@ digraph G {
             if len(ev_df):
                 ev_df = ev_df[(ev_df["date"].dt.year >= _y0) & (ev_df["date"].dt.year <= _y1)].reset_index(drop=True)
             if len(ev_df):
-                layers.append(alt.Chart(ev_df).mark_rule(color="#64748b", strokeDash=[3, 3]).encode(x="date:T"))
-                for k in range(3):
-                    sub = ev_df[ev_df.index % 3 == k]
+                _rows_y = [28.0, 20.0, 12.0]  # 이웃한 이슈가 겹치지 않게 3단으로 엇갈려 배치
+                ev_df["ypos"] = [_rows_y[k % 3] for k in range(len(ev_df))]
+                ev_df["y0"] = _y_lo
+                _xmin, _xmax = view_df["date"].min(), view_df["date"].max()
+                ev_df["right"] = ev_df["date"] >= (_xmax - (_xmax - _xmin) * 0.12)  # 오른쪽 끝 이슈는 글자를 왼쪽으로
+                layers.append(alt.Chart(ev_df).mark_rule(color="#94a3b8", strokeDash=[3, 3]).encode(
+                    x="date:T", y=alt.Y("y0:Q", scale=_yscale, title=None), y2="ypos:Q"))
+                for _right in (False, True):
+                    sub = ev_df[ev_df["right"] == _right]
                     if len(sub):
-                        layers.append(alt.Chart(sub).mark_text(align="left", dx=3, fontSize=10, color="#475569").encode(
-                            x="date:T", y=alt.value(10 + 12 * k), text="label:N"))
-            st.altair_chart(alt.layer(*layers).properties(height=270), use_container_width=True)
+                        layers.append(alt.Chart(sub).mark_text(
+                            align="right" if _right else "left", dx=-4 if _right else 4, baseline="middle",
+                            fontSize=11, fontWeight="bold", color="#1e293b").encode(
+                            x="date:T", y=alt.Y("ypos:Q", scale=_yscale, title=None), text="label:N"))
+            st.altair_chart(alt.layer(*layers).properties(height=300), use_container_width=True)
             _rng_txt = " · ".join(f"{n} {view_df[view_df['series'] == n]['drawdown'].min():.1f}%" for n in _names if (view_df['series'] == n).any())
-            st.caption(f"점선 = 주요 이슈의 저점 시기. 선택 구간 최대 낙폭: {_rng_txt} (주간 기준 표시, 계산은 일별 종가)")
+            st.caption(f"위쪽 흰 띠의 이름과 점선 = 주요 이슈의 저점 시기. 선택 구간 최대 낙폭: {_rng_txt} (주간 기준 표시, 계산은 일별 종가)")
 
             # ---- 드로우다운 Top 10 ----
             st.markdown("##### 🚨 포트폴리오 드로우다운 Top 10")
