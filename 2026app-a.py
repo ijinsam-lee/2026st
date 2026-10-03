@@ -5332,67 +5332,77 @@ digraph G {
             "멀티-팩터 랭킹입니다. 상위 20개만 표시합니다."
         )
 
-        ndx_sort_by = st.radio(
-            "🏆 정렬 기준 선택",
-            options=["종합 모멘텀 스코어", "1개월 수익률", "3개월 수익률", "6개월 수익률", "12개월 수익률"],
-            horizontal=True,
-            key="ndx_sort_by_radio"
-        )
+        def _ndx_set_loaded():
+            st.session_state["ndx_loaded"] = True
 
-        _ndx_list, _ndx_src = get_ndx_tickers()
-        with st.spinner("나스닥100 구성 종목 데이터를 집계 중..."):
-            _ndx_raw = get_all_financial_data_v2(_ndx_list)
-
-        if _ndx_raw is None or _ndx_raw.empty:
-            st.warning("나스닥100 종목 데이터를 불러오지 못했습니다. 잠시 후 새로고침해 주세요.")
-        else:
-            ndx_rows = []
-            for _, _r in _ndx_raw.iterrows():
-                ndx_rows.append({
-                    "티커 (Ticker)": _r["Ticker"],
-                    "현재가 ($)": f"${_r['현재가']:.2f}",
-                    "종합 모멘텀 스코어": _r["A_공격스코어"],
-                    "1개월 수익률 (%)": _r["1M"],
-                    "3개월 수익률 (%)": _r["3M"],
-                    "6개월 수익률 (%)": _r["6M"],
-                    "12개월 수익률 (%)": _r["12M"],
-                })
-            df_ndx = pd.DataFrame(ndx_rows)
-            _ndx_sort_map = {
-                "종합 모멘텀 스코어": "종합 모멘텀 스코어",
-                "1개월 수익률": "1개월 수익률 (%)",
-                "3개월 수익률": "3개월 수익률 (%)",
-                "6개월 수익률": "6개월 수익률 (%)",
-                "12개월 수익률": "12개월 수익률 (%)",
-            }
-            _ndx_col = _ndx_sort_map[ndx_sort_by]
-            df_ndx = df_ndx.sort_values(by=_ndx_col, ascending=False).reset_index(drop=True)
-            df_ndx.index += 1
-
-            st.markdown(f"### 📊 Top 10 Performers ({ndx_sort_by} 기준)")
-            df_ndx_top5 = df_ndx.head(10).copy()
-            try:
-                import altair as alt
-                ndx_chart = alt.Chart(df_ndx_top5).mark_bar(cornerRadiusEnd=6).encode(
-                    x=alt.X(f"{_ndx_col}:Q", title=ndx_sort_by),
-                    y=alt.Y("티커 (Ticker):N", sort='-x', title="종목 티커"),
-                    color=alt.Color("티커 (Ticker):N", scale=alt.Scale(scheme='tableau10'), legend=None),
-                    tooltip=["티커 (Ticker)", "현재가 ($)", _ndx_col]
-                ).properties(height=340)
-                st.altair_chart(ndx_chart, use_container_width=True)
-            except Exception:
-                st.bar_chart(df_ndx_top5.set_index("티커 (Ticker)")[_ndx_col])
-
-            st.markdown("### 🏆 실시간 모멘텀 순위표 (상위 20)")
-            _ndx_rk = df_ndx.head(20).copy()
-            _ndx_rk.insert(0, "순위", _ndx_rk.index)
-            render_html_table(_ndx_rk, ticker_cols=("티커 (Ticker)",))
-            st.caption(
-                f"※ 나스닥100 구성 종목 {len(_ndx_list)}개 중 데이터가 확보된 {len(df_ndx)}개를 비교해 상위 20개만 표시합니다 "
-                "(상장 12개월 미만 종목은 제외). 티커 옆 괄호는 한글 회사명이며, 티커에 마우스를 올리거나(폰은 터치) 간략 설명이 표시됩니다. "
-                "점수·수익률 단위는 %이고, 점수 산식은 ETF 랭킹과 같습니다."
-                + (" 구성 종목은 하루 한 번 위키피디아 표에서 자동 갱신합니다." if _ndx_src == "auto" else " 구성 종목은 내장 목록(2026-10 기준)을 사용 중입니다.")
+        if not st.session_state.get("ndx_loaded", False):
+            st.info(
+                "나스닥100은 종목이 약 100개라 불러오는 데 시간이 걸립니다. 앱 첫 로딩을 빠르게 하려고 "
+                "자동으로 불러오지 않으니, 필요할 때 아래 버튼을 눌러주세요. (한 번 불러오면 이 접속 동안 유지되고 데이터는 1시간 캐시됩니다.)"
             )
+            st.button("📥 나스닥100 랭킹 불러오기", key="ndx_load_btn", on_click=_ndx_set_loaded)
+        else:
+            ndx_sort_by = st.radio(
+                "🏆 정렬 기준 선택",
+                options=["종합 모멘텀 스코어", "1개월 수익률", "3개월 수익률", "6개월 수익률", "12개월 수익률"],
+                horizontal=True,
+                key="ndx_sort_by_radio"
+            )
+
+            _ndx_list, _ndx_src = get_ndx_tickers()
+            with st.spinner("나스닥100 구성 종목 데이터를 집계 중..."):
+                _ndx_raw = get_all_financial_data_v2(_ndx_list)
+
+            if _ndx_raw is None or _ndx_raw.empty:
+                st.warning("나스닥100 종목 데이터를 불러오지 못했습니다. 잠시 후 새로고침해 주세요.")
+            else:
+                ndx_rows = []
+                for _, _r in _ndx_raw.iterrows():
+                    ndx_rows.append({
+                        "티커 (Ticker)": _r["Ticker"],
+                        "현재가 ($)": f"${_r['현재가']:.2f}",
+                        "종합 모멘텀 스코어": _r["A_공격스코어"],
+                        "1개월 수익률 (%)": _r["1M"],
+                        "3개월 수익률 (%)": _r["3M"],
+                        "6개월 수익률 (%)": _r["6M"],
+                        "12개월 수익률 (%)": _r["12M"],
+                    })
+                df_ndx = pd.DataFrame(ndx_rows)
+                _ndx_sort_map = {
+                    "종합 모멘텀 스코어": "종합 모멘텀 스코어",
+                    "1개월 수익률": "1개월 수익률 (%)",
+                    "3개월 수익률": "3개월 수익률 (%)",
+                    "6개월 수익률": "6개월 수익률 (%)",
+                    "12개월 수익률": "12개월 수익률 (%)",
+                }
+                _ndx_col = _ndx_sort_map[ndx_sort_by]
+                df_ndx = df_ndx.sort_values(by=_ndx_col, ascending=False).reset_index(drop=True)
+                df_ndx.index += 1
+
+                st.markdown(f"### 📊 Top 10 Performers ({ndx_sort_by} 기준)")
+                df_ndx_top5 = df_ndx.head(10).copy()
+                try:
+                    import altair as alt
+                    ndx_chart = alt.Chart(df_ndx_top5).mark_bar(cornerRadiusEnd=6).encode(
+                        x=alt.X(f"{_ndx_col}:Q", title=ndx_sort_by),
+                        y=alt.Y("티커 (Ticker):N", sort='-x', title="종목 티커"),
+                        color=alt.Color("티커 (Ticker):N", scale=alt.Scale(scheme='tableau10'), legend=None),
+                        tooltip=["티커 (Ticker)", "현재가 ($)", _ndx_col]
+                    ).properties(height=340)
+                    st.altair_chart(ndx_chart, use_container_width=True)
+                except Exception:
+                    st.bar_chart(df_ndx_top5.set_index("티커 (Ticker)")[_ndx_col])
+
+                st.markdown("### 🏆 실시간 모멘텀 순위표 (상위 20)")
+                _ndx_rk = df_ndx.head(20).copy()
+                _ndx_rk.insert(0, "순위", _ndx_rk.index)
+                render_html_table(_ndx_rk, ticker_cols=("티커 (Ticker)",))
+                st.caption(
+                    f"※ 나스닥100 구성 종목 {len(_ndx_list)}개 중 데이터가 확보된 {len(df_ndx)}개를 비교해 상위 20개만 표시합니다 "
+                    "(상장 12개월 미만 종목은 제외). 티커 옆 괄호는 한글 회사명이며, 티커에 마우스를 올리거나(폰은 터치) 간략 설명이 표시됩니다. "
+                    "점수·수익률 단위는 %이고, 점수 산식은 ETF 랭킹과 같습니다."
+                    + (" 구성 종목은 하루 한 번 위키피디아 표에서 자동 갱신합니다." if _ndx_src == "auto" else " 구성 종목은 내장 목록(2026-10 기준)을 사용 중입니다.")
+                )
 
     with c_mdd:
         import altair as alt
