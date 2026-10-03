@@ -8,6 +8,52 @@ import datetime
 
 st.set_page_config(page_title="동적 자산배분 대시보드", layout="centered", initial_sidebar_state="collapsed")
 
+# ---------------------------------------------------------------------------
+# 🔒 접속 비밀번호 잠금 (선택 기능)
+#  - 비밀번호는 코드/GitHub에 쓰지 않고 Streamlit Secrets에 둡니다.
+#  - 켜기: Secrets에  APP_PASSWORD = "원하는비밀번호"  를 넣으면 잠금이 켜집니다.
+#  - 끄기: APP_PASSWORD 줄을 지우거나  PASSWORD_ENABLED = false  를 추가하면 잠금이 꺼집니다.
+#  - 켜져 있는데 비밀번호가 비어 있으면(실수 방지) 앱을 열지 않고 안내만 보여줍니다.
+#  - 로컬 실행처럼 Secrets가 전혀 없으면 잠금 없이 열립니다.
+# ---------------------------------------------------------------------------
+def _password_gate():
+    import hmac
+    import time
+
+    try:
+        _pw = st.secrets.get("APP_PASSWORD", None)
+        _flag = st.secrets.get("PASSWORD_ENABLED", None)
+    except Exception:
+        _pw, _flag = None, None
+    if _flag is None:
+        _enabled = bool(_pw)
+    else:
+        _enabled = str(_flag).strip().lower() not in ("false", "0", "no", "off", "")
+    if not _enabled:
+        return
+    if not _pw:
+        st.error("🔒 비밀번호 잠금이 켜져 있지만 비밀번호(APP_PASSWORD)가 설정되지 않았습니다. "
+                 "Streamlit 앱 설정의 Secrets에 APP_PASSWORD를 추가하거나, 잠금을 끄려면 PASSWORD_ENABLED = false 를 넣어주세요.")
+        st.stop()
+    if st.session_state.get("_pw_ok", False):
+        return
+
+    st.markdown("### 🔒 접속 비밀번호")
+    with st.form("pw_form"):
+        _typed = st.text_input("비밀번호를 입력하세요", type="password")
+        _go = st.form_submit_button("접속")
+    if _go:
+        if hmac.compare_digest(str(_typed).encode("utf-8"), str(_pw).encode("utf-8")):
+            st.session_state["_pw_ok"] = True
+            (getattr(st, "rerun", None) or st.experimental_rerun)()
+        else:
+            time.sleep(1)  # 무차별 대입 속도 늦추기
+            st.error("비밀번호가 올바르지 않습니다.")
+    st.stop()
+
+
+_password_gate()
+
 # 프리미엄 그레이/슬레이트 톤 스타일 및 탭 선택바 강조 스타일 주입
 st.markdown("""
 <style>
