@@ -144,8 +144,93 @@ st.title("📈 동적 자산배분 대시보드")
 st.caption("야후 파이낸스 실시간 데이터 기반 수시 리밸런싱 가이드 (2026년 전략 및 실시간 미국 ETF 랭킹 포함)")
 
 # ============================================================
+# 방문자 카운터 (브라우저 접속 1회 = 1방문, 새로고침하면 다시 집계)
+#  · 기본: counterapi.dev 공개 카운터에 저장 → 앱이 재시작돼도 누적 유지
+#  · 접속 실패 시: 앱 폴더의 JSON 파일에 임시 집계 (재배포 시 초기화될 수 있음)
+# ============================================================
+import os
+import json
+
+VISITOR_NS = "daa-dashboard-k7x2p9"  # 카운터 이름공간(다른 사람과 겹치지 않게 임의 문자열)
+
+
+def _api_count(name):
+    import requests
+    r = requests.get(f"https://api.counterapi.dev/v1/{VISITOR_NS}/{name}/up", timeout=3)
+    if r.status_code != 200:
+        return None
+    j = r.json()
+    c = j.get("count", j.get("value"))
+    return int(c) if c is not None else None
+
+
+def _local_visits(today):
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".visitor_counter.json")
+    except Exception:
+        path = ".visitor_counter.json"
+    data = {"total": 0, "days": {}}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data.update(json.load(fh))
+    except Exception:
+        pass
+    days = dict(data.get("days", {}))
+    days[today] = int(days.get(today, 0)) + 1
+    data["total"] = int(data.get("total", 0)) + 1
+    data["days"] = dict(sorted(days.items())[-60:])
+    try:
+        with open(path + ".tmp", "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(path + ".tmp", path)
+    except Exception:
+        pass
+    return data["total"], data["days"][today]
+
+
+def register_visit():
+    """세션당 1번만 집계하고 (누적, 오늘, 저장방식)을 돌려줍니다."""
+    if "_visit_stats" not in st.session_state:
+        kst = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=9)
+        today = kst.strftime("%Y%m%d")
+        total = day = None
+        try:
+            total = _api_count("visits-total")
+            day = _api_count(f"visits-{today}") if total is not None else None
+        except Exception:
+            total = day = None
+        src = "api"
+        if total is None or day is None:
+            total, day = _local_visits(today)
+            src = "local"
+        st.session_state["_visit_stats"] = (total, day, src)
+    return st.session_state["_visit_stats"]
+
+
+_v_total, _v_today, _v_src = register_visit()
+# (방문자 수 표시는 '자산 계산기' 탭 맨 아래에 있습니다)
+
+
+# ============================================================
 # 백테스트 비용·세금 반영 설정 (슬리피지 / 미국주식 양도소득세) — 선택 반영
 # ============================================================
+def money_man_input(label, key, default_man, min_man=0, max_man=10_000_000, help=None, disabled=False):
+    """만원 단위 정수 입력칸. 천단위 콤마를 넣어 표시합니다 (예: 5억원 → 50,000).
+    입력 중 콤마는 브라우저 JS가 즉시 넣고, 입력을 마치면 파이썬 콜백이 범위를 맞춰 다시 정리합니다."""
+    import re
+
+    def _norm():
+        d = re.sub(r"[^0-9]", "", str(st.session_state.get(key, "")))
+        v = max(min_man, min(max_man, int(d) if d else 0))
+        st.session_state[key] = f"{v:,}"
+
+    if key not in st.session_state:
+        st.session_state[key] = f"{default_man:,}"
+    st.text_input(label, key=key, on_change=_norm, help=help, disabled=disabled)
+    d = re.sub(r"[^0-9]", "", str(st.session_state.get(key, "")))
+    return max(min_man, min(max_man, int(d) if d else 0))
+
+
 def fmt_krw(x):
     """원화를 읽기 쉬운 단위(억원/만원/원)로 표시."""
     x = float(x)
@@ -167,10 +252,9 @@ st.markdown("""<style>
 
 with st.expander("⚙️ 백테스트 비용·세금 반영 설정", expanded=False):
     st.markdown('<span class="cost-exp-marker"></span>', unsafe_allow_html=True)
-    COST_CAPITAL = st.number_input(
-        "① 초기 투자금 (원)", min_value=100000, max_value=100000000000, value=10000000, step=1000000,
-        format="%d", key="cost_capital",
-        help="백테스트 시작 시점에 이 금액을 투자했다고 가정하고, 슬리피지와 양도세를 원화로 환산합니다. 자산 계산기의 초기 투자금에도 함께 반영됩니다.")
+    COST_CAPITAL = 10000 * money_man_input(
+        "① 초기 투자금 (만원)", "cost_capital_man", 1000, min_man=10, max_man=10_000_000,
+        help="만원 단위로 입력합니다 (예: 5억원 = 50,000). 백테스트 시작 시점에 이 금액을 투자했다고 가정하고, 슬리피지와 양도세를 원화로 환산합니다. 자산 계산기의 초기 투자금에도 함께 반영됩니다.")
     st.caption(f"= ₩{COST_CAPITAL:,.0f} ({fmt_krw(COST_CAPITAL)}) · 백테스트 시작일에 전액 투자한 것으로 가정합니다.")
     _cs1, _cs2 = st.columns(2)
     COST_SLIP_ON = _cs1.checkbox("② 슬리피지 반영", value=False, key="cost_slip_on",
@@ -2387,11 +2471,32 @@ else:
   doc.addEventListener('mouseout', onOut, true);
   doc.addEventListener('click', onClick, true);
   win.addEventListener('scroll', hide, true);
+  // '(만원' 이 들어간 금액 입력칸: 입력하는 즉시 천단위 콤마 삽입 (예: 50000 → 50,000)
+  var nativeSet = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value').set;
+  function onMoneyInput(e) {
+    var el = e.target;
+    if (!el || el.tagName !== 'INPUT' || (el.getAttribute('aria-label') || '').indexOf('(만원') < 0) { return; }
+    var raw = el.value, pos = el.selectionStart || 0;
+    var before = raw.slice(0, pos).replace(/[^0-9]/g, '').length;
+    var digits = raw.replace(/[^0-9]/g, '').slice(0, 9);
+    var f = digits ? Number(digits).toLocaleString('en-US') : '';
+    if (f !== raw) {
+      nativeSet.call(el, f);
+      el.dispatchEvent(new win.Event('input', { bubbles: true }));
+      var cnt = 0, np = 0;
+      while (np < f.length && cnt < before) { if (/[0-9]/.test(f.charAt(np))) { cnt++; } np++; }
+      try { el.setSelectionRange(np, np); } catch (err) {}
+    }
+  }
+  doc.addEventListener('input', onMoneyInput, true);
   var mt = null;
   function markCost() {
     doc.querySelectorAll('[data-testid="stExpander"]').forEach(function (e) {
       var sm = e.querySelector('summary');
       if (sm && sm.textContent.indexOf('백테스트 비용·세금') >= 0) { e.classList.add('cost-exp'); }
+    });
+    doc.querySelectorAll('input[aria-label*="(만원"]').forEach(function (i) {
+      if (i.getAttribute('inputmode') !== 'numeric') { i.setAttribute('inputmode', 'numeric'); }  // 폰에서 숫자 키패드
     });
   }
   markCost();
@@ -2402,6 +2507,7 @@ else:
     doc.removeEventListener('mouseout', onOut, true); doc.removeEventListener('click', onClick, true);
     win.removeEventListener('scroll', hide, true);
     mo.disconnect();
+    doc.removeEventListener('input', onMoneyInput, true);
   };
 })();
 </script>
@@ -5235,7 +5341,7 @@ digraph G {
 
         st.markdown("---")
         if st.session_state.get("_calc_init_sync") != COST_CAPITAL:  # 상단 '초기 투자금'이 바뀌면 계산기에도 반영
-            st.session_state["calc_init_input"] = int(round(COST_CAPITAL / 10000))
+            st.session_state["calc_init_input"] = f"{int(round(COST_CAPITAL / 10000)):,}"
             st.session_state["_calc_init_sync"] = COST_CAPITAL
         _TAX_DONE = "양도세 반영 완료 (0.0% · 프리셋 CAGR에 포함)"
         if st.session_state.get("_calc_tax_prev") != COST_TAX_ON:  # 양도세 반영을 켜면 이중 과세 방지로 세율 0% 선택
@@ -5243,10 +5349,10 @@ digraph G {
             st.session_state["_calc_tax_prev"] = COST_TAX_ON
         col_inp1, col_inp2 = st.columns(2)
         with col_inp1:
-            calc_init = st.number_input("초기 투자금 (만원 ₩)", min_value=0, step=100, key="calc_init_input",
-                                        help="상단 '백테스트 비용·세금 반영 설정'의 초기 투자금과 연동됩니다. 여기서 직접 바꿀 수도 있습니다.")
-            calc_monthly = st.number_input("매월 저축/적립금 (만원 ₩)", min_value=0, value=0, step=10)
-            calc_expense = st.number_input("매월 지출/생활비 (만원 ₩)", min_value=0, value=0, step=10, help="투자수익에서 정기 지출하는 생활비가 있다면 마이너스로 처리됩니다.")
+            calc_init = money_man_input("초기 투자금 (만원 ₩)", "calc_init_input", 1000,
+                                        help="상단 '백테스트 비용·세금 반영 설정'의 초기 투자금과 연동됩니다. 여기서 직접 바꿀 수도 있습니다. 만원 단위로 입력합니다 (예: 5억원 = 50,000).")
+            calc_monthly = money_man_input("매월 저축/적립금 (만원 ₩)", "calc_monthly_man", 0)
+            calc_expense = money_man_input("매월 지출/생활비 (만원 ₩)", "calc_expense_man", 0, help="투자수익에서 정기 지출하는 생활비가 있다면 마이너스로 처리됩니다.")
             calc_years = st.slider("시뮬레이션 투자 기간 (년)", min_value=1, max_value=40, value=20)
         with col_inp2:
             calc_cagr = st.number_input("연 목표 수익률 CAGR (%)", min_value=0.0, max_value=100.0, key="cagr_input", step=0.1, format="%.2f")
@@ -5359,3 +5465,6 @@ digraph G {
             f'<table class="growth-tbl"><thead><tr>{_hdr}</tr></thead><tbody>{_body}</tbody></table>',
             unsafe_allow_html=True,
         )
+
+        st.markdown("---")
+        st.caption(f"👥 오늘 {_v_today:,}명 · 누적 {_v_total:,}명 방문" + ("" if _v_src == "api" else " (임시 집계)"))
