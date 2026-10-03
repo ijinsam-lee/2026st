@@ -264,17 +264,17 @@ with st.expander("⚙️ 백테스트 비용·세금 반영 설정", expanded=Fa
     if COST_SLIP_ON:
         _cs1.caption(f"전량 교체 1회 ≈ ₩{COST_CAPITAL * COST_SLIP_PCT / 100 * 2:,.0f} (매도+매수)")
     COST_TAX_ON = _cs2.checkbox("③ 미국주식 양도소득세 반영", value=True, key="cost_tax_on",
-                                help="매년 12월 말에 그 해의 순이익에서 기본공제를 뺀 금액에 세율을 곱해 자산에서 차감합니다.")
+                                help="매년 12월 말에 그 해의 순이익에서 기본공제를 뺀 금액에 세율을 곱해 세액을 확정하고, 실제 차감은 이듬해 6월 말에 합니다.")
     COST_TAX_PCT = _cs2.number_input("양도소득세율 (%)", min_value=0.0, max_value=50.0, value=22.0, step=0.5,
                                      key="cost_tax_pct", disabled=not COST_TAX_ON)
     COST_DEDUCT = _cs2.number_input("연 기본공제 (원)", min_value=0, max_value=100000000, value=2500000, step=500000,
                                     format="%d", key="cost_deduct", disabled=not COST_TAX_ON,
                                     help="해외주식 양도차익에서 매년 빼주는 금액(기본 250만원). 0으로 두면 공제 없이 계산합니다.")
     st.caption(
-        "• 슬리피지: 리밸런싱으로 바뀐 비중만큼 매수·매도 각각에 부과합니다. 한 종목을 전량 교체하면 매도 1% + 매수 1% = 약 2%가 차감됩니다. "
+        "• 슬리피지: 리밸런싱으로 바뀐 비중만큼 매수·매도 각각에 부과합니다. 한 종목을 전량 교체하면 매도·매수 각각 입력값만큼(기본 0.2% + 0.2% = 약 0.4%) 차감됩니다. "
         "현금 전환·월중 하드스탑 청산 후 재진입도 거래로 계산합니다.\n"
-        "• 양도세: 해마다 12월 말 순이익에서 기본공제(기본 250만원)를 뺀 금액에 세율을 부과합니다(손실 해는 0, 이월공제 없음). "
-        "환전 비용은 반영하지 않으며, 진행 중인 올해분 세금은 연말에 차감됩니다.\n"
+        "• 양도세: 해마다 12월 말 순이익에서 기본공제(기본 250만원)를 뺀 금액으로 세액을 확정하고, 이듬해 6월 말 자산에서 차감합니다(손실 해는 0, 이월공제 없음). "
+        "환전 비용은 반영하지 않으며, 마지막 12월 이후 아직 납부 전인 세금은 최종 NAV에 반영되지 않습니다.\n"
         "• 설정은 혼합전략·전략 A·B·C 백테스트 결과(CAGR·MDD·NAV·월별 표·차트)에 모두 적용됩니다."
     )
 
@@ -325,6 +325,7 @@ def apply_trading_costs(bt, cfg=None):
         if tax > 0 and month == 6 and pending_tax_pts > 0:
             tax_deducted_pts = min(nav * 0.9, pending_tax_pts)  # 파산 방지 리미트
             nav -= tax_deducted_pts
+            year_start_nav -= tax_deducted_pts  # 납부한 세금이 올해 손실로 잡혀 내년 과세표준을 깎지 않도록 기준 NAV도 같이 내림
             pending_tax_pts = 0.0
 
         # ② 12월 말: 해당 연도 순이익 및 다음 해에 낼 양도세 확정 (당월 인출 X)
@@ -379,7 +380,7 @@ def cost_status_caption(bt):
             "연말 자산(세후)": f"₩{g['nav'].iloc[-1] / 100.0 * COST_CAPITAL:,.0f}",
             "순이익(세전)": f"₩{gain:,.0f}" if pd.notna(gain) else "연말 전",
             "과세표준(공제후)": f"₩{taxable:,.0f}" if pd.notna(taxable) else "-",
-            "양도세": f"₩{g['tax_krw'].sum():,.0f}",
+            "양도세(전년분 6월 납부)": f"₩{g['tax_krw'].sum():,.0f}",
             "슬리피지": f"₩{g['slip_krw'].sum():,.0f}",
         })
     with st.expander("💴 연도별 비용·세금 내역 (원)", expanded=False):
@@ -437,13 +438,12 @@ def summarize_bt_mix(bt):
 # ============================================================
 # 전략 A 실시간 백테스트 엔진 (TIP 11M 이동평균 카나리아 + 공격 Top4/방어 Top1 로테이션)
 # ============================================================
-@st.cache_data(ttl=3600)
-def get_daily_price_history_a(tickers, start="2000-01-01"):
-    file_path = "historical_daily_prices_2000_2026.parquet"
-    if os.path.exists(file_path):
-        df = pd.read_parquet(file_path)
-        valid_cols = [t for t in tickers if t in df.columns]
-        return df[valid_cols].loc[start:]
+PRICE_PARQUET = "historical_daily_prices_2000_2026.parquet"
+
+
+def _download_close(tickers, start):
+    """야후에서 수정종가를 내려받아 (날짜 x 티커) DataFrame으로 반환."""
+    tickers = list(tickers)
     df = yf.download(tickers, start=start, interval="1d", progress=False, auto_adjust=True)
     if isinstance(df.columns, pd.MultiIndex):
         if "Close" in df.columns.levels[0]:
@@ -455,6 +455,64 @@ def get_daily_price_history_a(tickers, start="2000-01-01"):
     if isinstance(close, pd.Series):
         close = close.to_frame(tickers[0])
     return close.dropna(how="all")
+
+
+def _splice_recent_prices(old, new):
+    """파일(old) 마지막 날짜 이후의 새 가격을 이어붙임. 수정종가는 배당 때마다 과거가 재계산되므로
+    겹치는 마지막 날짜에서 비율로 맞춰(scale) 이어붙인다."""
+    if new is None or new.empty:
+        return old
+    adds = {}
+    for t in old.columns:
+        if t not in new.columns:
+            continue
+        o, n = old[t].dropna(), new[t].dropna()
+        if o.empty or n.empty:
+            continue
+        common = o.index.intersection(n.index)
+        if len(common) == 0:
+            continue
+        d = common[-1]
+        if not (o.loc[d] > 0 and n.loc[d] > 0):
+            continue
+        adds[t] = n[n.index > o.index[-1]] * (o.loc[d] / n.loc[d])
+    if not adds:
+        return old
+    return old.combine_first(pd.DataFrame(adds)).sort_index()
+
+
+@st.cache_data(ttl=3600)
+def get_daily_price_history_a(tickers, start="2000-01-01"):
+    """백필 파일(2000~)을 기본으로 쓰되, 파일 이후의 최신 구간은 야후에서 자동으로 이어붙입니다.
+    (파일에 없는 티커는 야후에서 직접 받습니다. 파일이 없으면 기존처럼 전부 야후에서 받습니다.)"""
+    tickers = list(tickers)
+    base = pd.DataFrame()
+    if os.path.exists(PRICE_PARQUET):
+        try:
+            base = pd.read_parquet(PRICE_PARQUET)
+        except Exception:
+            base = pd.DataFrame()
+    have = [t for t in tickers if t in base.columns]
+    missing = [t for t in tickers if t not in base.columns]
+    parts = []
+    if have:
+        old = base[have].dropna(how="all")
+        try:
+            recent_start = (old.index[-1] - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+            old = _splice_recent_prices(old, _download_close(have, recent_start))
+        except Exception:
+            pass  # 인터넷 오류 시 파일 데이터만 사용
+        parts.append(old)
+    if missing:
+        try:
+            parts.append(_download_close(missing, start))
+        except Exception:
+            pass
+    if not parts:
+        return pd.DataFrame()
+    out = pd.concat(parts, axis=1).sort_index()
+    out = out[[t for t in tickers if t in out.columns]]
+    return out.loc[start:].dropna(how="all")
 
 def to_monthly_last_a(df):
     return df.resample("ME").last().dropna(how="all")
@@ -777,7 +835,7 @@ def run_backtest_strategy_mix_full(monthly_px, spy_divs):
 #     초과분을 현금(CASH)으로 자동 전환하여 강제 분산시킵니다.
 #   - 2단계 개선: 월중 하드스탑(Intra-month Stop-loss)
 #     일별 가격으로 월중 누적 손실을 감시하다가, 포트폴리오가 월초(전월 말 종가) 대비 임계치
-#     (기본 -7%)까지 하락하면 그 시점 이후 월말까지 전량 현금화한 것으로 간주해 추가 손실을 차단합니다.
+#     (기본 -10%)까지 하락하면 그 시점 이후 월말까지 전량 현금화한 것으로 간주해 추가 손실을 차단합니다.
 # ============================================================
 @st.cache_data(ttl=3600)
 def run_backtest_strategy_mix_improved_full(
@@ -1351,25 +1409,32 @@ def _cagr_from_bt(bt):
 
 
 @st.cache_data(ttl=3600)
-def get_preset_cagrs(start=PRESET_START, cost_cfg=None):
+def get_preset_cagrs(start=PRESET_START, cost_cfg=None, mix_opts=(False, 35.0, False, -10.0)):
     out = {}
     try:
         spy_divs = get_spy_dividend_history()
     except Exception:
         spy_divs = pd.Series(dtype=float)
+    _cap_on, _cap_pct, _stop_on, _stop_pct = mix_opts
     specs = {
-        "A": (sorted(set(OFFENSIVE_A + DEFENSIVE_A + ["TIP", "QQQ"])), lambda m: run_backtest_strategy_a_full(m)),
-        "B": (sorted(set(OFFENSIVE_B + DEFENSIVE_B + ["TIP", "QQQ"])), lambda m: run_backtest_strategy_b_full(m)),
-        "C": (sorted(set(OFFENSIVE_C + DEFENSIVE_C + ["SPY", "QQQ"])), lambda m: run_backtest_strategy_c_full(m, spy_divs)),
+        "A": (sorted(set(OFFENSIVE_A + DEFENSIVE_A + ["TIP", "QQQ"])), lambda m, d: run_backtest_strategy_a_full(m)),
+        "B": (sorted(set(OFFENSIVE_B + DEFENSIVE_B + ["TIP", "QQQ"])), lambda m, d: run_backtest_strategy_b_full(m)),
+        "C": (sorted(set(OFFENSIVE_C + DEFENSIVE_C + ["SPY", "QQQ"])), lambda m, d: run_backtest_strategy_c_full(m, spy_divs)),
         "mix": (
             sorted(set(OFFENSIVE_A + DEFENSIVE_A + OFFENSIVE_B + DEFENSIVE_B + OFFENSIVE_C + DEFENSIVE_C + ["TIP", "SPY", "QQQ"])),
-            lambda m: run_backtest_strategy_mix_full(m, spy_divs),
+            lambda m, d: (
+                run_backtest_strategy_mix_improved_full(
+                    m, spy_divs, daily_px=d,
+                    apply_cap=_cap_on, weight_cap=_cap_pct,
+                    apply_stop_loss=_stop_on, stop_loss_pct=_stop_pct,
+                ) if (_cap_on or _stop_on) else run_backtest_strategy_mix_full(m, spy_divs)
+            ),
         ),
     }
     for key, (tickers, runner) in specs.items():
         try:
             daily = get_daily_price_history_a(tickers, start=start)
-            bt = runner(to_monthly_last_a(daily))
+            bt = runner(to_monthly_last_a(daily), daily)
             if cost_cfg is not None and len(bt) > 0:
                 bt = apply_trading_costs(bt, cost_cfg)  # 상단 슬리피지·세금 설정 반영
             out[key] = round(float(_cagr_from_bt(bt)), 2) if len(bt) > 0 else None
@@ -1782,7 +1847,7 @@ _GL_DEFS = [
     (("UPI 지수",), "Ulcer Performance Index. 낙폭의 깊이와 지속기간을 반영한 위험 대비 수익률"),
     (("연간 턴오버", "턴오버"), "1년 동안 포트폴리오 자산이 교체된 비중의 합(회전율). 높을수록 거래비용·슬리피지 증가"),
     (("비중 상한",), "여러 전략이 같은 자산을 고를 때 한 자산에 쏠리지 않게 정한 한도(예: 35%). 초과분은 현금 전환"),
-    (("월중 하드스탑", "하드스탑"), "월말 리밸런싱을 기다리지 않고, 월중 누적 손실이 기준(예: -7%)에 닿으면 즉시 전량 현금화하는 규칙"),
+    (("월중 하드스탑", "하드스탑"), "월말 리밸런싱을 기다리지 않고, 월중 누적 손실이 기준(예: -10%)에 닿으면 즉시 전량 현금화하는 규칙"),
     (("연 변동성",), "수익률의 표준편차를 연 단위로 환산한 값. 클수록 등락이 심함"),
     (("표준편차",), "수익률이 평균에서 흩어진 정도. 클수록 변동이 큼"),
     (("YTD",), "Year-To-Date. 올해 1월 1일부터 현재까지의 누적 수익률"),
@@ -2866,6 +2931,63 @@ else:
         "12M": [_ret_txt(t, "12M") for t in df_mix["자산군 (Ticker)"]],
     })
 
+    def render_month_end_history(hist_prices, spy_divs_hist, live_cap_on, live_cap_pct):
+        """월말 기준 리밸런싱 포트폴리오 역사 (최근 1년) — 월별 세부 리밸런싱 기록 아래에 표시."""
+        if hist_prices and "SPY" in hist_prices:
+            st.markdown("---")
+            st.markdown("### 📅 월말 기준 리밸런싱 포트폴리오 역사 (최근 1년)")
+            st.caption("매월 최종 영업일 마감 데이터를 기준으로 실시간 모멘텀과 시그널을 연산하여, 익월 1일 아침 리밸런싱 시 적용되는 혼합 포트폴리오 구성 비중입니다.")
+            
+            spy_series = hist_prices["SPY"]
+            df_spy_dates = spy_series.to_frame()
+            df_spy_dates['year'] = df_spy_dates.index.year
+            df_spy_dates['month'] = df_spy_dates.index.month
+            
+            month_ends = df_spy_dates.groupby(['year', 'month']).apply(lambda x: x.index[-1]).tolist()
+            
+            now = now_us_eastern()  # 미국 동부 시간 기준 (한국 새벽에 미국 장중인 월말을 '완료'로 잘못 판정하지 않도록)
+            completed_month_ends = [d for d in month_ends if not (d.year == now.year and d.month == now.month)]
+            completed_12_months = completed_month_ends[-12:]
+            completed_12_months.reverse()
+            
+            col_h1, col_h2 = st.columns(2)
+            for idx, date in enumerate(completed_12_months):
+                target_col = col_h1 if idx < 6 else col_h2  # 모바일에서 세로로 쌓여도 최신순 유지
+                
+                # 변수명 재사용 이슈 방지를 위한 hist_sig_a, hist_sig_b, hist_sig_c 구분 수정
+                hist_portfolio, hist_sig_a, hist_sig_b, hist_sig_c, dy_c = compute_historical_portfolio_at_month_end(
+                    hist_prices, spy_divs_hist, date,
+                    OFFENSIVE_A, DEFENSIVE_A, OFFENSIVE_B, DEFENSIVE_B, OFFENSIVE_C, DEFENSIVE_C
+                )
+                
+                date_str = date.strftime("%Y년 %m월 %d일")
+                sig_text_a = "🟢 공격" if hist_sig_a else "🛡️ 방어"
+                sig_text_b = "🟢 공격" if hist_sig_b else "🛡️ 방어"
+                sig_text_c = "🟢 공격" if hist_sig_c else "🛡️ 방어"
+                
+                with target_col:
+                    with st.expander(f"📅 {date_str} 마감 기준 포트폴리오"):
+                        sm1, sm2, sm3 = st.columns(3)
+                        with sm1:
+                            st.caption("전략A 신호")
+                            st.markdown(f"**{sig_text_a}**")
+                        with sm2:
+                            st.caption("전략B 신호")
+                            st.markdown(f"**{sig_text_b}**")
+                        with sm3:
+                            st.caption("전략C 신호")
+                            st.markdown(f"**{sig_text_c}**<br/><small>({dy_c:.2f}%)</small>", unsafe_allow_html=True)
+                        
+                        st.markdown("**포트폴리오 비중:**")
+                        _hist_view = apply_weight_cap(hist_portfolio, live_cap_pct)[0] if live_cap_on else hist_portfolio
+                        if live_cap_on:
+                            st.caption(f"📐 비중 상한 {live_cap_pct:.0f}% 적용")
+                        hist_rows = [{"자산명(Ticker)": k, "배분비중 (%)": f"{v:.2f}%"} for k, v in _hist_view.items() if v > 0.005]
+                        if hist_rows:
+                            st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
+                        else:
+                            st.write("⚠️ 해당 기간 데이터 부족")
+
     with c_2026:
         st.header("🏆 2026년 혼합 전략")
         st.markdown(
@@ -2885,7 +3007,7 @@ else:
 | 전략 B (공격형) | TIP 1·3·6·9·12개월 평균 모멘텀 부호 | 가중 모멘텀 1위 100% | 5개월 수익률 1위 100% 또는 현금 |
 | 전략 C (섹터로테이션) | SPY 12개월 배당수익률 > 1.33% | 모멘텀 1위 섹터 100% | 모멘텀 1위 100% 또는 현금 |
 
-선택 적용 리스크 장치로 단일 자산 비중 상한(기본 35%)과 월중 하드스탑(기본 -7%)이 있습니다. 둘 다 백테스트 설정 패널의 체크박스로 켜고 끄며, 기본 상태는 꺼짐입니다.
+선택 적용 리스크 장치로 단일 자산 비중 상한(기본 35%)과 월중 하드스탑(기본 -10%)이 있습니다. 둘 다 백테스트 설정 패널의 체크박스로 켜고 끄며, 기본 상태는 꺼짐입니다.
 
 ## 투자 유니버스와 데이터
 
@@ -2971,7 +3093,7 @@ digraph G {
 
 | 항목 | 비중 상한 (Cap) | 월중 하드스탑 |
 | --- | --- | --- |
-| 기본값 | 35% | -7.0% |
+| 기본값 | 35% | -10.0% |
 | 입력 범위 | 10 – 50%, 1%p 단위 | -20.0 – -1.0%, 0.5%p 단위 |
 | 기본 적용 여부 | 꺼짐 (체크박스) | 꺼짐 (체크박스) |
 | 판단 시점 | 월말 리밸런싱 시 | 다음 달 매 영업일 종가 |
@@ -3013,9 +3135,9 @@ digraph G {
 
 | 파라미터 | 기본값 | 선택 범위 | 위치 |
 | --- | --- | --- | --- |
-| 백테스트 시작일 | 2015-01-01 | 2015 / 2018 / 2020년 1월 1일 | 설정 패널 |
+| 백테스트 시작일 | 2015-01-01 | 2004 / 2000 / 2015 / 2018 / 2020년 1월 1일 | 설정 패널 |
 | 비중 상한 | 35% | 10 – 50% | 설정 패널 |
-| 월중 하드스탑 | -7.0% | -20.0 – -1.0% | 설정 패널 |
+| 월중 하드스탑 | -10.0% | -20.0 – -1.0% | 설정 패널 |
 | 비중 상한 적용 | 꺼짐 | 체크박스 | 설정 패널 |
 | 월중 하드스탑 적용 | 꺼짐 | 체크박스 | 설정 패널 |
 
@@ -3143,61 +3265,6 @@ digraph G {
 
         st.markdown("---")
         render_intramonth_stop_monitor(hist_prices, spy_divs_hist)
-
-        if hist_prices and "SPY" in hist_prices:
-            st.markdown("---")
-            st.markdown("### 📅 월말 기준 리밸런싱 포트폴리오 역사 (최근 1년)")
-            st.caption("매월 최종 영업일 마감 데이터를 기준으로 실시간 모멘텀과 시그널을 연산하여, 익월 1일 아침 리밸런싱 시 적용되는 혼합 포트폴리오 구성 비중입니다.")
-            
-            spy_series = hist_prices["SPY"]
-            df_spy_dates = spy_series.to_frame()
-            df_spy_dates['year'] = df_spy_dates.index.year
-            df_spy_dates['month'] = df_spy_dates.index.month
-            
-            month_ends = df_spy_dates.groupby(['year', 'month']).apply(lambda x: x.index[-1]).tolist()
-            
-            now = now_us_eastern()  # 미국 동부 시간 기준 (한국 새벽에 미국 장중인 월말을 '완료'로 잘못 판정하지 않도록)
-            completed_month_ends = [d for d in month_ends if not (d.year == now.year and d.month == now.month)]
-            completed_12_months = completed_month_ends[-12:]
-            completed_12_months.reverse()
-            
-            col_h1, col_h2 = st.columns(2)
-            for idx, date in enumerate(completed_12_months):
-                target_col = col_h1 if idx < 6 else col_h2  # 모바일에서 세로로 쌓여도 최신순 유지
-                
-                # 변수명 재사용 이슈 방지를 위한 hist_sig_a, hist_sig_b, hist_sig_c 구분 수정
-                hist_portfolio, hist_sig_a, hist_sig_b, hist_sig_c, dy_c = compute_historical_portfolio_at_month_end(
-                    hist_prices, spy_divs_hist, date,
-                    OFFENSIVE_A, DEFENSIVE_A, OFFENSIVE_B, DEFENSIVE_B, OFFENSIVE_C, DEFENSIVE_C
-                )
-                
-                date_str = date.strftime("%Y년 %m월 %d일")
-                sig_text_a = "🟢 공격" if hist_sig_a else "🛡️ 방어"
-                sig_text_b = "🟢 공격" if hist_sig_b else "🛡️ 방어"
-                sig_text_c = "🟢 공격" if hist_sig_c else "🛡️ 방어"
-                
-                with target_col:
-                    with st.expander(f"📅 {date_str} 마감 기준 포트폴리오"):
-                        sm1, sm2, sm3 = st.columns(3)
-                        with sm1:
-                            st.caption("전략A 신호")
-                            st.markdown(f"**{sig_text_a}**")
-                        with sm2:
-                            st.caption("전략B 신호")
-                            st.markdown(f"**{sig_text_b}**")
-                        with sm3:
-                            st.caption("전략C 신호")
-                            st.markdown(f"**{sig_text_c}**<br/><small>({dy_c:.2f}%)</small>", unsafe_allow_html=True)
-                        
-                        st.markdown("**포트폴리오 비중:**")
-                        _hist_view = apply_weight_cap(hist_portfolio, live_cap_pct)[0] if live_cap_on else hist_portfolio
-                        if live_cap_on:
-                            st.caption(f"📐 비중 상한 {live_cap_pct:.0f}% 적용")
-                        hist_rows = [{"자산명(Ticker)": k, "배분비중 (%)": f"{v:.2f}%"} for k, v in _hist_view.items() if v > 0.005]
-                        if hist_rows:
-                            st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
-                        else:
-                            st.write("⚠️ 해당 기간 데이터 부족")
 
         st.markdown("---")
         st.markdown("### 🛑 2026 혼합전략 백테스트 성과 분석")
@@ -3641,6 +3708,8 @@ digraph G {
                 use_container_width=True, hide_index=True
             )
 
+            render_month_end_history(hist_prices, spy_divs_hist, live_cap_on, live_cap_pct)
+
             st.markdown("---")
             st.markdown("### 🔬 MDD 안전장치 전/후 비교 (비중 상한 · 월중 하드스탑)")
             st.caption(f"같은 기간·같은 전략에서 안전장치만 바꿔 비교합니다. 상한 {mix_cap:.0f}% · 하드스탑 {mix_stop:.1f}%는 위 설정값입니다.")
@@ -3649,7 +3718,7 @@ digraph G {
                 return run_backtest_strategy_mix_improved_full(
                     monthly_px_mix, spy_divs_mix, daily_px=(daily_px_mix if stop is not None else None),
                     apply_cap=cap is not None, weight_cap=cap if cap is not None else 35.0,
-                    apply_stop_loss=stop is not None, stop_loss_pct=stop if stop is not None else -7.0,
+                    apply_stop_loss=stop is not None, stop_loss_pct=stop if stop is not None else -10.0,
                 )
 
             _mix_cases = {
@@ -5451,7 +5520,11 @@ digraph G {
         )
 
         _cost_on = bool(COST_SLIP_ON or COST_TAX_ON)
-        _preset_cagr = get_preset_cagrs(PRESET_START, _cost_cfg() if _cost_on else None)
+        _mix_opts = (
+            bool(st.session_state.get("apply_cap_mix", False)), float(st.session_state.get("mix_cap_pct", 35.0)),
+            bool(st.session_state.get("apply_stop_mix", False)), float(st.session_state.get("mix_stop_pct", -10.0)),
+        )
+        _preset_cagr = get_preset_cagrs(PRESET_START, _cost_cfg() if _cost_on else None, _mix_opts)
 
         def _pv(k):
             v = _preset_cagr.get(k)
@@ -5479,7 +5552,13 @@ digraph G {
         col_pre3.button(f"⚡ 전략 B ({_pv('B'):.2f}%)", key="preset_btn_B", on_click=_apply_preset, args=("B",))
         col_pre4.button(f"🔄 전략 C ({_pv('C'):.2f}%)", key="preset_btn_C", on_click=_apply_preset, args=("C",))
         if all(_preset_cagr.get(k) is not None for k in ["mix", "A", "B", "C"]):
-            st.caption(f"※ 각 전략 탭의 초기 설정(백테스트 시작일 {PRESET_START}, 안전장치 미적용) 기준 실측 CAGR이며, 전략 탭의 '연환산 복리 수익률(CAGR)'과 같은 값입니다.")
+            _safe_bits = []
+            if _mix_opts[0]:
+                _safe_bits.append(f"혼합 비중상한 {_mix_opts[1]:g}%")
+            if _mix_opts[2]:
+                _safe_bits.append(f"혼합 하드스탑 {_mix_opts[3]:g}%")
+            _safe_txt = " · ".join(_safe_bits) if _safe_bits else "안전장치 미적용"
+            st.caption(f"※ 각 전략 탭의 초기 설정(백테스트 시작일 {PRESET_START}, {_safe_txt}) 기준 실측 CAGR이며, 전략 탭의 '연환산 복리 수익률(CAGR)'과 같은 값입니다.")
             if _cost_on:
                 _bits = []
                 if COST_SLIP_ON:
