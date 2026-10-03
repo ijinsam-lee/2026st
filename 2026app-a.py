@@ -83,6 +83,13 @@ st.markdown("""
 .stTabs [aria-selected="true"] { color: #ffffff !important; box-shadow: none !important; }
 
 /* 시뮬레이션 설정 상자도 품격 있는 뉴트럴 그레이 톤 플레이트로 교체 */
+[data-testid="stVerticalBlockBorderWrapper"]:has(.control-header) {
+    background-color: #f1f5f9 !important;
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 12px !important;
+    padding: 10px 14px !important;
+    margin-bottom: 14px !important;
+}
 .control-panel {
     background-color: #f1f5f9 !important; /* 부드러운 라이트 그레이 */
     border: 1px solid #cbd5e1 !important;
@@ -3288,8 +3295,7 @@ digraph G {
         st.markdown("---")
         st.markdown("### 🛑 2026 혼합전략 백테스트 성과 분석")
 
-        with st.container():
-            st.markdown('<div class="control-panel">', unsafe_allow_html=True)
+        with st.container(border=True):
             st.markdown('<div class="control-header">⚙️ 데이터 범위 및 리스크 관리 설정</div>', unsafe_allow_html=True)
             bt_start_label_mix = st.selectbox(
     "분석 및 백테스트 시작일",
@@ -3323,7 +3329,6 @@ digraph G {
                      "일별 가격으로 월중 누적 손실을 감시하다가 월초(전월 말) 대비 설정한 낙폭까지 하락하면, 그 시점 이후 월말까지 전량 현금 보유로 간주해 추가 손실을 차단합니다."
             )
             st.caption("선택한 시작일 기준으로 2026 혼합전략(전략A+B+C 33.33%씩) 백테스트 시뮬레이션이 즉시 재계산됩니다.")
-            st.markdown('</div>', unsafe_allow_html=True)
 
         use_improved_mix = apply_cap_mix or apply_stop_mix
 
@@ -3873,8 +3878,7 @@ digraph G {
         st.markdown("---")
         st.markdown("### 🛑 전략 A 백테스트 성과 분석")
 
-        with st.container():
-            st.markdown('<div class="control-panel">', unsafe_allow_html=True)
+        with st.container(border=True):
             st.markdown('<div class="control-header">⚙️ 데이터 범위 및 리스크 관리 설정</div>', unsafe_allow_html=True)
             bt_start_label_a = st.selectbox(
                 "분석 및 백테스트 시작일",
@@ -3890,7 +3894,6 @@ digraph G {
             )
             bt_start_a = bt_start_label_a.split(" ")[0]
             st.caption("선택한 시작일 기준으로 전략 A 백테스트 시뮬레이션(NAV, 연도별/월별 수익률, 낙폭, 리밸런싱 기록)이 즉시 재계산됩니다.")
-            st.markdown('</div>', unsafe_allow_html=True)
 
         with st.spinner("전략 A 실시간 백테스트 엔진 구동 중..."):
             try:
@@ -4371,8 +4374,7 @@ digraph G {
         st.markdown("---")
         st.markdown("### 🛑 전략 B 백테스트 성과 분석")
 
-        with st.container():
-            st.markdown('<div class="control-panel">', unsafe_allow_html=True)
+        with st.container(border=True):
             st.markdown('<div class="control-header">⚙️ 데이터 범위 및 리스크 관리 설정</div>', unsafe_allow_html=True)
             bt_start_label_b = st.selectbox(
                 "분석 및 백테스트 시작일",
@@ -4388,7 +4390,6 @@ digraph G {
             )
             bt_start_b = bt_start_label_b.split(" ")[0]
             st.caption("선택한 시작일 기준으로 전략 B 백테스트 시뮬레이션(NAV, 연도별/월별 수익률, 낙폭, 리밸런싱 기록)이 즉시 재계산됩니다.")
-            st.markdown('</div>', unsafe_allow_html=True)
 
         with st.spinner("전략 B 실시간 백테스트 엔진 구동 중..."):
             try:
@@ -4875,8 +4876,7 @@ digraph G {
         st.markdown("---")
         st.markdown("### 🛑 전략 C 백테스트 성과 분석")
 
-        with st.container():
-            st.markdown('<div class="control-panel">', unsafe_allow_html=True)
+        with st.container(border=True):
             st.markdown('<div class="control-header">⚙️ 데이터 범위 및 리스크 관리 설정</div>', unsafe_allow_html=True)
             bt_start_label_c = st.selectbox(
                 "분석 및 백테스트 시작일",
@@ -4892,7 +4892,6 @@ digraph G {
             )
             bt_start_c = bt_start_label_c.split(" ")[0]
             st.caption("선택한 시작일 기준으로 전략 C 백테스트 시뮬레이션(NAV, 연도별/월별 수익률, 낙폭, 리밸런싱 기록)이 즉시 재계산됩니다.")
-            st.markdown('</div>', unsafe_allow_html=True)
 
         with st.spinner("전략 C 실시간 백테스트 엔진 구동 중..."):
             try:
