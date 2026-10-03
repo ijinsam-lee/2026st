@@ -257,13 +257,13 @@ with st.expander("⚙️ 백테스트 비용·세금 반영 설정", expanded=Fa
         help="만원 단위로 입력합니다 (예: 5억원 = 50,000). 백테스트 시작 시점에 이 금액을 투자했다고 가정하고, 슬리피지와 양도세를 원화로 환산합니다. 자산 계산기의 초기 투자금에도 함께 반영됩니다.")
     st.caption(f"= ₩{COST_CAPITAL:,.0f} ({fmt_krw(COST_CAPITAL)}) · 백테스트 시작일에 전액 투자한 것으로 가정합니다.")
     _cs1, _cs2 = st.columns(2)
-    COST_SLIP_ON = _cs1.checkbox("② 슬리피지 반영", value=False, key="cost_slip_on",
+    COST_SLIP_ON = _cs1.checkbox("② 슬리피지 반영", value=True, key="cost_slip_on",
                                  help="종목을 사고팔 때마다 체결가 차이로 손해 보는 비용을 월별 수익에서 차감합니다.")
-    COST_SLIP_PCT = _cs1.number_input("슬리피지 (매수·매도 각 1회당 %)", min_value=0.0, max_value=5.0, value=1.0, step=0.1,
+    COST_SLIP_PCT = _cs1.number_input("슬리피지 (매수·매도 각 1회당 %)", min_value=0.0, max_value=5.0, value=0.2, step=0.1,
                                       key="cost_slip_pct", disabled=not COST_SLIP_ON)
     if COST_SLIP_ON:
         _cs1.caption(f"전량 교체 1회 ≈ ₩{COST_CAPITAL * COST_SLIP_PCT / 100 * 2:,.0f} (매도+매수)")
-    COST_TAX_ON = _cs2.checkbox("③ 미국주식 양도소득세 반영", value=False, key="cost_tax_on",
+    COST_TAX_ON = _cs2.checkbox("③ 미국주식 양도소득세 반영", value=True, key="cost_tax_on",
                                 help="매년 12월 말에 그 해의 순이익에서 기본공제를 뺀 금액에 세율을 곱해 자산에서 차감합니다.")
     COST_TAX_PCT = _cs2.number_input("양도소득세율 (%)", min_value=0.0, max_value=50.0, value=22.0, step=0.5,
                                      key="cost_tax_pct", disabled=not COST_TAX_ON)
@@ -285,8 +285,8 @@ def _cost_cfg():
 
 
 def apply_trading_costs(bt, cfg=None):
-    """백테스트 결과(월별 DataFrame)에 슬리피지·양도세를 반영한 새 결과를 돌려줍니다. 둘 다 꺼져 있으면 원본 그대로.
-    NAV 100 = 초기 투자금(COST_CAPITAL원)으로 보고 원화 금액(slip_krw, tax_krw)을 함께 기록합니다."""
+    """백테스트 결과(월별 DataFrame)에 슬리피지·양도세를 반영한 새 결과를 돌려줍니다.
+    - 양도세 변경: 12월 말에 한 해의 수익과 납부할 세금을 '확정'하고, 실제 차감은 '이듬해 6월 말'에 집행합니다."""
     slip_on, slip_pct, tax_on, tax_pct, cap, deduct = cfg if cfg is not None else _cost_cfg()
     if bt is None or len(bt) == 0 or not (slip_on or tax_on):
         return bt
@@ -297,6 +297,11 @@ def apply_trading_costs(bt, cfg=None):
     nav, peak, year_start_nav = 100.0, 100.0, 100.0
     prev_alloc = {}
     navs, rets, dds, slip_k, tax_k, gain_k, taxable_k = [], [], [], [], [], [], []
+    
+    pending_tax_pts = 0.0  # 이듬해 6월에 납부 대기 중인 세금 (포인트)
+    last_year_gain_krw = np.nan
+    last_year_taxable_krw = np.nan
+
     for _, row in df.iterrows():
         gross = float(row["monthly_return"]) / 100.0
         alloc = dict(row["alloc"]) if isinstance(row["alloc"], dict) else {}
@@ -305,27 +310,43 @@ def apply_trading_costs(bt, cfg=None):
         traded = sum(abs(alloc.get(k, 0.0) - prev_alloc.get(k, 0.0)) for k in keys) / 100.0
         buy_cost = slip * traded
         stop_cost = slip * sum(w for k, w in alloc.items() if k != "CASH (현금)") / 100.0 if stopped else 0.0
+        
         nav_before = nav
         nav_after_buy = nav_before * (1 - buy_cost)
         nav_mid = nav_after_buy * (1 + gross)
         nav = nav_mid * (1 - stop_cost)
         slip_pts = nav_before * buy_cost + nav_mid * stop_cost
-        tax_pts, gain_krw, taxable_krw = 0.0, np.nan, np.nan
-        if tax > 0 and pd.Timestamp(row["date"]).month == 12:
-            gain_krw = (nav - year_start_nav) * krw_per_pt
-            taxable_krw = max(0.0, gain_krw - float(deduct))
-            tax_pts = taxable_krw * tax / krw_per_pt
-            nav -= tax_pts
+        
+        row_date = pd.Timestamp(row["date"])
+        month = row_date.month
+        
+        tax_deducted_pts = 0.0
+        # ① 이듬해 6월 말: 전년도 세금 인출 집행
+        if tax > 0 and month == 6 and pending_tax_pts > 0:
+            tax_deducted_pts = min(nav * 0.9, pending_tax_pts)  # 파산 방지 리미트
+            nav -= tax_deducted_pts
+            pending_tax_pts = 0.0
+
+        # ② 12월 말: 해당 연도 순이익 및 다음 해에 낼 양도세 확정 (당월 인출 X)
+        cur_gain_krw, cur_taxable_krw = np.nan, np.nan
+        if tax > 0 and month == 12:
+            cur_gain_krw = (nav - year_start_nav) * krw_per_pt
+            cur_taxable_krw = max(0.0, cur_gain_krw - float(deduct))
+            pending_tax_pts = cur_taxable_krw * tax / krw_per_pt
             year_start_nav = nav
+            last_year_gain_krw = cur_gain_krw
+            last_year_taxable_krw = cur_taxable_krw
+
         peak = max(peak, nav)
         navs.append(nav)
         rets.append((nav / nav_before - 1) * 100.0)
         dds.append((nav / peak - 1) * 100.0)
         slip_k.append(slip_pts * krw_per_pt)
-        tax_k.append(tax_pts * krw_per_pt)
-        gain_k.append(gain_krw)
-        taxable_k.append(taxable_krw)
-        prev_alloc = {} if stopped else alloc  # 월중 손절 후에는 현금 상태에서 다시 진입
+        tax_k.append(tax_deducted_pts * krw_per_pt)
+        gain_k.append(cur_gain_krw)
+        taxable_k.append(cur_taxable_krw)
+        prev_alloc = {} if stopped else alloc
+        
     df["nav"], df["monthly_return"], df["drawdown"] = navs, rets, dds
     df["slip_krw"], df["tax_krw"], df["gain_krw"], df["taxable_krw"] = slip_k, tax_k, gain_k, taxable_k
     return df
@@ -417,7 +438,12 @@ def summarize_bt_mix(bt):
 # 전략 A 실시간 백테스트 엔진 (TIP 11M 이동평균 카나리아 + 공격 Top4/방어 Top1 로테이션)
 # ============================================================
 @st.cache_data(ttl=3600)
-def get_daily_price_history_a(tickers, start="2018-01-01"):
+def get_daily_price_history_a(tickers, start="2000-01-01"):
+    file_path = "historical_daily_prices_2000_2026.parquet"
+    if os.path.exists(file_path):
+        df = pd.read_parquet(file_path)
+        valid_cols = [t for t in tickers if t in df.columns]
+        return df[valid_cols].loc[start:]
     df = yf.download(tickers, start=start, interval="1d", progress=False, auto_adjust=True)
     if isinstance(df.columns, pd.MultiIndex):
         if "Close" in df.columns.levels[0]:
@@ -592,6 +618,10 @@ def run_backtest_strategy_b_full(monthly_px):
 # ============================================================
 @st.cache_data(ttl=3600)
 def get_spy_dividend_history():
+    div_file = "spy_dividends_2000_2026.csv"
+    if os.path.exists(div_file):
+        s = pd.read_csv(div_file, index_col=0, parse_dates=True).squeeze("columns")
+        return s
     try:
         divs = yf.Ticker("SPY").dividends
         if divs.index.tz is not None:
@@ -753,7 +783,7 @@ def run_backtest_strategy_mix_full(monthly_px, spy_divs):
 def run_backtest_strategy_mix_improved_full(
     monthly_px, spy_divs, daily_px=None,
     apply_cap=False, weight_cap=35.0,
-    apply_stop_loss=False, stop_loss_pct=-7.0,
+    apply_stop_loss=False, stop_loss_pct=-10.0,
 ):
     bt_a = run_backtest_strategy_a_full(monthly_px)
     bt_b = run_backtest_strategy_b_full(monthly_px)
@@ -1395,7 +1425,7 @@ def render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="mix"):
     st.caption("⚠️ 이 일별 표는 슬리피지·거래비용·세금·환전 비용이 반영되지 않았으며 백테스트 비용·세금 설정과 무관합니다. 실제 체결 가격과 계좌 수익률은 이 값과 다를 수 있습니다.")
 
     if is_mix:
-        stop_pct = float(st.session_state.get("mix_stop_pct", -7.0))
+        stop_pct = float(st.session_state.get("mix_stop_pct", -10.0))
         cap_on = bool(st.session_state.get("apply_cap_mix", False))
         cap_pct = float(st.session_state.get("mix_cap_pct", 35.0))
     else:
@@ -3176,16 +3206,22 @@ digraph G {
             st.markdown('<div class="control-panel">', unsafe_allow_html=True)
             st.markdown('<div class="control-header">⚙️ 데이터 범위 및 리스크 관리 설정</div>', unsafe_allow_html=True)
             bt_start_label_mix = st.selectbox(
-                "분석 및 백테스트 시작일",
-                ["2018-01-01 (코로나 및 금리인상기 포함)", "2015-01-01 (장기 검증)", "2020-01-01 (최근 트렌드)"],
-                index=1,
-                key="bt_start_select_mix"
-            )
+    "분석 및 백테스트 시작일",
+    [
+     "2004-01-01 (금융위기 포함 · 닷컴버블 제외)",        
+     "2000-01-01 (닷컴버블 및 금융위기 포함)",
+        "2015-01-01 (장기 검증)",
+        "2018-01-01 (코로나 및 금리인상기 포함)",
+        "2020-01-01 (최근 트렌드)"
+    ],
+    index=2,
+    key="bt_start_select_mix"
+)
             bt_start_mix = bt_start_label_mix.split(" ")[0]
             st.markdown("**🛡️ MDD 개선 로직 (단계별 적용 — 개별 On/Off 가능)**")
             _mc1, _mc2 = st.columns(2)
             mix_cap = _mc1.number_input("비중 상한 (%)", min_value=10.0, max_value=50.0, value=35.0, step=1.0, key="mix_cap_pct")
-            mix_stop = _mc2.number_input("월중 하드스탑 (%)", min_value=-20.0, max_value=-1.0, value=-7.0, step=0.5, key="mix_stop_pct")
+            mix_stop = _mc2.number_input("월중 하드스탑 (%)", min_value=-20.0, max_value=-1.0, value=-10.0, step=0.5, key="mix_stop_pct")
             apply_cap_mix = st.checkbox(
                 f"비중 상한: 단일 자산군 비중 상한(Cap {mix_cap:.0f}%) 적용",
                 value=False,
@@ -3754,8 +3790,14 @@ digraph G {
             st.markdown('<div class="control-header">⚙️ 데이터 범위 및 리스크 관리 설정</div>', unsafe_allow_html=True)
             bt_start_label_a = st.selectbox(
                 "분석 및 백테스트 시작일",
-                ["2018-01-01 (코로나 및 금리인상기 포함)", "2015-01-01 (장기 검증)", "2020-01-01 (최근 트렌드)"],
-                index=1,
+                [
+                    "2004-01-01 (금융위기 포함 · 닷컴버블 제외)",
+                    "2000-01-01 (닷컴버블 및 금융위기 포함)",
+                    "2015-01-01 (장기 검증)",
+                    "2018-01-01 (코로나 및 금리인상기 포함)",
+                    "2020-01-01 (최근 트렌드)"
+                ],
+                index=2,
                 key="bt_start_select_a"
             )
             bt_start_a = bt_start_label_a.split(" ")[0]
@@ -4246,8 +4288,14 @@ digraph G {
             st.markdown('<div class="control-header">⚙️ 데이터 범위 및 리스크 관리 설정</div>', unsafe_allow_html=True)
             bt_start_label_b = st.selectbox(
                 "분석 및 백테스트 시작일",
-                ["2018-01-01 (코로나 및 금리인상기 포함)", "2015-01-01 (장기 검증)", "2020-01-01 (최근 트렌드)"],
-                index=1,
+                [
+                    "2004-01-01 (금융위기 포함 · 닷컴버블 제외)",
+                    "2000-01-01 (닷컴버블 및 금융위기 포함)",
+                    "2015-01-01 (장기 검증)",
+                    "2018-01-01 (코로나 및 금리인상기 포함)",
+                    "2020-01-01 (최근 트렌드)"
+                ],
+                index=2,
                 key="bt_start_select_b"
             )
             bt_start_b = bt_start_label_b.split(" ")[0]
@@ -4744,8 +4792,14 @@ digraph G {
             st.markdown('<div class="control-header">⚙️ 데이터 범위 및 리스크 관리 설정</div>', unsafe_allow_html=True)
             bt_start_label_c = st.selectbox(
                 "분석 및 백테스트 시작일",
-                ["2018-01-01 (코로나 및 금리인상기 포함)", "2015-01-01 (장기 검증)", "2020-01-01 (최근 트렌드)"],
-                index=1,
+                [
+                    "2004-01-01 (금융위기 포함 · 닷컴버블 제외)",
+                    "2000-01-01 (닷컴버블 및 금융위기 포함)",
+                    "2015-01-01 (장기 검증)",
+                    "2018-01-01 (코로나 및 금리인상기 포함)",
+                    "2020-01-01 (최근 트렌드)"
+                ],
+                index=2,
                 key="bt_start_select_c"
             )
             bt_start_c = bt_start_label_c.split(" ")[0]
