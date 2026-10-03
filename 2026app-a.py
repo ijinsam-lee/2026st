@@ -1444,7 +1444,7 @@ def get_preset_cagrs(start=PRESET_START, cost_cfg=None, mix_opts=(False, 35.0, F
 
 
 # ============================================================
-# 월중 하드스탑 실시간 모니터 (이번 달 일별 수익률 추적)
+# 이번 달 일별 수익률 (월중 하드스탑 모니터) — 이번 달 일별 수익률 추적
 #   - 직전 월말에 확정된 혼합 포트폴리오를 이번 달 보유 포트폴리오로 보고,
 #     직전 월말 종가 대비 일별 누적 수익률을 백테스트와 같은 방식(비중 × 종목 누적수익률 합)으로 계산합니다.
 # ============================================================
@@ -1484,7 +1484,7 @@ def render_intramonth_stop_monitor(hist_prices, spy_divs_hist, strategy="mix"):
     is_mix = strategy == "mix"
     label = "혼합" if is_mix else f"전략 {strategy}"
     if is_mix:
-        st.markdown("### 🛑 월중 하드스탑 모니터 (이번 달 일별 수익률)")
+        st.markdown("### 🛑 이번 달 일별 수익률 (월중 하드스탑 모니터)")
     else:
         st.markdown(f"### 📈 전략 {strategy} 이번 달 일별 수익률")
     st.caption("⚠️ 이 일별 표는 슬리피지·거래비용·세금·환전 비용이 반영되지 않았으며 백테스트 비용·세금 설정과 무관합니다. 실제 체결 가격과 계좌 수익률은 이 값과 다를 수 있습니다.")
@@ -1869,7 +1869,8 @@ if GL_TICKERS_IN_TEXT:
 _GL_RE = _re.compile(
     r"(?<![A-Za-z0-9_^])(?:" + "|".join(_re.escape(k) for k in sorted(GLOSSARY, key=len, reverse=True)) + r")(?![A-Za-z0-9_])"
 )
-_GL_SPLIT = _re.compile(r"(</?[A-Za-z][^>]*>|`[^`]*`)")
+_GL_SPLIT = _re.compile(r"(</?[A-Za-z][^>]*>|`[^`]*`|\$\$.+?\$\$|\$[^$\n]+\$)", _re.S)
+_GL_MATH = _re.compile(r"^(\$\$.+\$\$|\$[^$\n]+\$)$", _re.S)  # 수식($...$) 안에는 설명 태그를 넣지 않음 (수식이 깨짐)
 
 
 def glossify(text):
@@ -1878,7 +1879,9 @@ def glossify(text):
         return text
     out, skip = [], False
     for part in _GL_SPLIT.split(text):
-        if part.startswith("<") or part.startswith("`"):
+        if _GL_MATH.match(part):
+            out.append(part)
+        elif part.startswith("<") or part.startswith("`"):
             if _re.search(r'class="[^"]*\bgl\b', part):
                 skip = True
             elif part == "</span>" and skip:
@@ -3110,7 +3113,7 @@ digraph G {
 월말 종가로 신호와 비중을 정하고, 같은 종가에 체결했다고 보고 다음 달 월간 수익률을 적용합니다. NAV는 100에서 시작하며, 수익은 실현되는 달(다음 월말)에 기록합니다.
 
 - **현금 수익률**: 0%로 가정합니다.
-- **거래비용·세금·슬리피지**: 기본은 반영하지 않으며, 맨 위 설정에서 슬리피지(기본 1%/회)와 양도세(22%, 연 1회)를 선택 반영할 수 있습니다.
+- **거래비용·세금·슬리피지**: 기본으로 반영합니다. 맨 위 설정에서 슬리피지(기본 0.2%/회)와 양도세(22%, 연 1회: 12월 말 확정·이듬해 6월 말 납부, 연 기본공제 250만원)를 끄거나 값을 바꿀 수 있습니다.
 - **혼합 결합**: 세 전략이 모두 기록을 가진 날짜만 씁니다(교집합).
 - **드로다운**: 월말 NAV의 직전 고점 대비 하락률입니다. 월중 낙폭은 잡히지 않습니다.
 
@@ -3141,7 +3144,7 @@ digraph G {
 | 비중 상한 적용 | 꺼짐 | 체크박스 | 설정 패널 |
 | 월중 하드스탑 적용 | 꺼짐 | 체크박스 | 설정 패널 |
 
-실시간 비중 분배 현황에는 '비중 상한'이 체크 시 함께 적용됩니다. 월중 하드스탑은 백테스트와 월중 하드스탑 모니터에서 확인합니다.
+실시간 비중 분배 현황에는 '비중 상한'이 체크 시 함께 적용됩니다. 월중 하드스탑은 백테스트와 '이번 달 일별 수익률(월중 하드스탑 모니터)'에서 확인합니다.
 
 ## 한계와 유의사항
 
@@ -3262,6 +3265,22 @@ digraph G {
                 })
             
             st.dataframe(pd.DataFrame(calc_data), use_container_width=True, hide_index=True)
+
+        st.markdown(
+            """
+<div style="border:2px solid #f2c94c;background:#fffdf4;border-radius:12px;padding:14px 18px;margin:12px 0 4px 0;">
+<div style="font-size:1.05rem;font-weight:800;margin-bottom:6px;">📌 리밸런싱 실전 매매 방법 — 슬리피지 0.2% 이내로 묶는 법</div>
+<div style="margin-bottom:8px;">백테스트에서 슬리피지를 <b>0.2%</b>로 가정했으므로, 실제 계좌에서도 아래 규칙을 지켜야 이 수치 안에서 체결됩니다.</div>
+<ol style="margin:0 0 0 18px;padding:0;">
+<li style="margin-bottom:8px;"><b>미국 정규장 개장 직후(첫 15~30분) 주문 피하기</b><br/>
+장 시작 직후는 호가 변동성이 극심해 슬리피지가 커집니다. 한국 시간으로 개장(서머타임 22:30 · 겨울 23:30) 후 30분이 지난 <b>장중 안정기~새벽</b>에 체결하세요.</li>
+<li><b>시장가(Market) 대신 지정가(Limit) 또는 LOC 주문 활용</b><br/>
+종가 기준 리밸런싱이므로 <b>LOC(Limit On Close, 종가 지정가 주문)</b>를 쓰면 종가 부근에서 슬리피지를 최소화할 수 있습니다.</li>
+</ol>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
 
         st.markdown("---")
         render_intramonth_stop_monitor(hist_prices, spy_divs_hist)
@@ -3803,7 +3822,7 @@ digraph G {
 
         st.markdown(
             "**1단계: 카나리아 신호 판단** \n"
-            "신호 비율($TIP 현재가 / TIP_{11MA}$)이 $1.0$을 초과하면 공격 모드, 이하이면 방어 모드로 진입합니다."
+            "신호 비율($\\dfrac{\\text{TIP 현재가}}{\\text{TIP 11개월 이동평균}}$)이 $1.0$을 초과하면 공격 모드, 이하이면 방어 모드로 진입합니다."
         )
         col1, col2, col3 = st.columns(3)
         col1.metric("TIP 현재가", f"${tip_current:.2f}")
