@@ -1912,9 +1912,11 @@ LONG_EVENTS = [
     ("중국쇼크", "2015-16 중국 쇼크·유가 급락", "2015-05-01", "2016-02-29"),
     ("2018 Q4", "2018 4분기 긴축·무역분쟁", "2018-09-01", "2018-12-31"),
     ("코로나", "2020 코로나 팬데믹", "2020-02-01", "2020-04-30"),
+    ("러우전쟁", "2022 러시아-우크라이나 전쟁", "2022-02-01", "2022-03-31"),
     ("2022 긴축", "2022 긴축 발작 (금리 인상기)", "2022-01-01", "2022-12-31"),
     ("엔캐리", "2024 엔캐리 청산·AI 주가 조정", "2024-07-01", "2024-08-31"),
     ("관세쇼크", "2025 美 관세 쇼크", "2025-02-01", "2025-05-31"),
+    ("이란전쟁", "2026 미국-이란 전쟁·유가 급등", "2026-01-01", "2026-05-31"),
 ]
 
 
@@ -2260,8 +2262,25 @@ def render_drawdown_with_benchmark(chart_df, strategy_name):
     _dd_min = float(long_df["drawdown"].min()) if len(long_df) else 0.0
     _dd_lo = int(np.floor(_dd_min / 5.0) * 5)
     _dd_ticks = list(range(0, _dd_lo - 1, -5)) if _dd_lo < 0 else [0, -5]
-    y_enc = alt.Y("drawdown:Q", title="MDD (%)", scale=alt.Scale(domain=[min(_dd_lo, -5), 0], nice=False),
-                  axis=alt.Axis(values=_dd_ticks))
+
+    # 주요 이슈(장기 낙폭 탭과 같은 목록)의 저점 시기를 SPY 기준으로 찾아 표시 구간 안의 것만 사용
+    ev_marks = []
+    _vis = dd_df["date_str"].tolist()
+    try:
+        _hist = get_long_history(("SPY", "QQQ"), "1996-01-01")  # 장기 낙폭 탭과 같은 캐시를 재사용
+        if "SPY" in _hist:
+            for _short, _full, _a, _b in LONG_EVENTS:
+                _es = event_stats(_hist["SPY"], _a, _b)
+                if _es:
+                    _m = f"{_es['trough']:%Y-%m}"
+                    if _m in _vis:
+                        ev_marks.append({"date_str": _m, "label": _short})
+    except Exception:
+        ev_marks = []
+    _lo_dom = float(min(_dd_lo, -5))
+    _hi_dom = max(8.0, abs(_lo_dom) * 0.3) if ev_marks else 0.0  # 0% 위쪽 흰 띠: 이슈 이름 자리
+    _yscale = alt.Scale(domain=[_lo_dom, _hi_dom], nice=False)
+    y_enc = alt.Y("drawdown:Q", title="MDD (%)", scale=_yscale, axis=alt.Axis(values=_dd_ticks))
     tip = [alt.Tooltip("date_str:N", title="년-월"), alt.Tooltip("series:N", title="구분"),
            alt.Tooltip("drawdown:Q", title="낙폭 (%)", format=".2f")]
     color_enc = alt.Color("series:N", scale=color_scale, sort=domain,
@@ -2275,12 +2294,30 @@ def render_drawdown_with_benchmark(chart_df, strategy_name):
         opacity=0.6, line={"color": "#991b1b", "strokeWidth": 1.5}
     ).encode(x=x_enc, y=y_enc, color=color_enc, tooltip=tip)
 
-    st.altair_chart((qqq_layer + strat_layer).properties(height=440), use_container_width=True)
+    layers = [qqq_layer, strat_layer]
+    if ev_marks:
+        ev_df = pd.DataFrame(ev_marks)
+        _rows_y = [_hi_dom * 0.85, _hi_dom * 0.55, _hi_dom * 0.25]  # 이웃한 이슈가 겹치지 않게 3단 배치
+        _pos = {m: i for i, m in enumerate(_vis)}
+        ev_df["ypos"] = [_rows_y[k % 3] for k in range(len(ev_df))]
+        ev_df["y0"] = _lo_dom
+        ev_df["right"] = [_pos[m] >= 0.88 * len(_vis) for m in ev_df["date_str"]]  # 오른쪽 끝은 글자를 왼쪽으로
+        layers.append(alt.Chart(ev_df).mark_rule(color="#94a3b8", strokeDash=[3, 3]).encode(
+            x=alt.X("date_str:N", sort=None), y=alt.Y("y0:Q", scale=_yscale, title=None), y2="ypos:Q"))
+        for _right in (False, True):
+            _sub = ev_df[ev_df["right"] == _right]
+            if len(_sub):
+                layers.append(alt.Chart(_sub).mark_text(
+                    align="right" if _right else "left", dx=-4 if _right else 4, baseline="middle",
+                    fontSize=11, fontWeight="bold", color="#1e293b").encode(
+                    x=alt.X("date_str:N", sort=None), y=alt.Y("ypos:Q", scale=_yscale, title=None), text="label:N"))
+    st.altair_chart(alt.layer(*layers).properties(height=350), use_container_width=True)
 
     if "QQQ" in dd_df.columns:
         st.caption(
             f"빨강 = {strategy_name} (선택 구간 MDD {dd_df[strategy_name].min():.2f}%), "
             f"연회색 = 벤치마크 QQQ (선택 구간 MDD {dd_df['QQQ'].min():.2f}%)"
+            + (" · 위쪽 이름과 점선 = 주요 이슈의 저점 시기(SPY 기준)" if ev_marks else "")
         )
 
 
